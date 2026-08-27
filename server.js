@@ -60,7 +60,7 @@ let _evoWarned = false;
 // fire-and-forget: nunca bloqueia o drip, nunca derruba a Lara, e NUNCA chama pushLog (evita loop)
 function alertaEvo(text) {
   if (!(EVO.url && EVO.instance && EVO.apikey && EVO.to)) {
-    if (!_evoWarned) { _evoWarned = true; console.log('[evo] alerta OFF — falta EVOLUTION_URL/INSTANCE/APIKEY/ALERT_NUMBER'); }
+    if (!_evoWarned) { _evoWarned = true; console.log(`[evo] alerta OFF — url:${EVO.url ? 1 : 0} inst:${EVO.instance ? 1 : 0} key:${EVO.apikey ? 1 : 0} to:${EVO.to ? 1 : 0}`); }
     return;
   }
   const url = `${EVO.url}/message/sendText/${encodeURIComponent(EVO.instance)}`;
