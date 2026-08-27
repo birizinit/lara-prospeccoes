@@ -37,6 +37,8 @@ function pushLog(level, msg) {
   const e = { t: new Date().toISOString(), level, msg };
   log.push(e); if (log.length > 500) log.shift();
   console.log(`[${e.t}] ${level.toUpperCase()} ${msg}`);
+  if (level === 'sent') alertaEvo('✅ Lara enviou · ' + msg);        // avisa cada disparo
+  else if (level === 'error') alertaEvo('⚠️ Lara erro · ' + msg);   // avisa cada erro
 }
 function loadJSON(f, def) { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return def; } }
 function saveJSON(f, o) { fs.writeFileSync(f, JSON.stringify(o, null, 2)); }
@@ -46,6 +48,32 @@ let leads = loadJSON(LEADS_FILE, []);
 // runtime overrides (paused/dryRun) persistem por cima do config
 const rt = Object.assign({ paused: CFG.campaign.paused, dryRun: CFG.campaign.dryRun }, state.runtimeCfg || {});
 function persist() { state.runtimeCfg = { paused: rt.paused, dryRun: rt.dryRun }; saveJSON(STATE_FILE, state); saveJSON(LEADS_FILE, leads); }
+
+// ---------- alerta Evolution (WhatsApp interno p/ o Gabriel) ----------
+const EVO = {
+  url: (process.env.EVOLUTION_URL || '').replace(/\/+$/, ''),
+  instance: process.env.EVOLUTION_INSTANCE || '',
+  apikey: process.env.EVOLUTION_APIKEY || '',
+  to: process.env.ALERT_NUMBER || '',
+};
+let _evoWarned = false;
+// fire-and-forget: nunca bloqueia o drip, nunca derruba a Lara, e NUNCA chama pushLog (evita loop)
+function alertaEvo(text) {
+  if (!(EVO.url && EVO.instance && EVO.apikey && EVO.to)) {
+    if (!_evoWarned) { _evoWarned = true; console.log('[evo] alerta OFF — falta EVOLUTION_URL/INSTANCE/APIKEY/ALERT_NUMBER'); }
+    return;
+  }
+  const url = `${EVO.url}/message/sendText/${encodeURIComponent(EVO.instance)}`;
+  request(url, { method: 'POST', headers: { apikey: EVO.apikey, 'Content-Type': 'application/json' },
+                 body: { number: EVO.to, text }, rejectUnauthorized: false })
+    .then(r => { if (r.status >= 300) console.log('[evo] HTTP ' + r.status + ' ' + (r.text || '').slice(0, 140)); })
+    .catch(e => console.log('[evo] falhou: ' + e.message));
+}
+// se a Lara CAIR, avisa antes de morrer (o Fly reinicia a máquina)
+process.on('uncaughtException', (e) => { try { alertaEvo('🔴 Lara CAIU (exceção): ' + (e && e.message || e)); } catch {} console.error('uncaughtException', e); setTimeout(() => process.exit(1), 1500); });
+process.on('unhandledRejection', (e) => { try { alertaEvo('🔴 Lara: promise rejeitada · ' + (e && e.message || e)); } catch {} console.error('unhandledRejection', e); });
+// aviso de que subiu/reiniciou (também sinaliza recuperação de queda)
+setTimeout(() => alertaEvo(`🤖 Lara subiu · dryRun=${rt.dryRun} · paused=${rt.paused}`), 2500);
 
 // ---------- util HTTP ----------
 function request(urlStr, { method = 'GET', headers = {}, body = null, rejectUnauthorized = true } = {}) {
