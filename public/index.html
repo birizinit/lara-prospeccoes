@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lara · Prospecções</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div class="app">
+  <!-- SIDEBAR -->
+  <aside class="side">
+    <div class="brand">
+      <div class="logo">L</div>
+      <div>
+        <h1>Lara <span>Prospecções</span></h1>
+        <p class="tag">Google Maps → WhatsApp · drip inteligente</p>
+      </div>
+    </div>
+
+    <section class="card">
+      <h2>1 · Onde prospectar</h2>
+      <label>Nicho / termo de busca
+        <input id="niche" type="text" placeholder="ex.: distribuidora de embalagens" />
+      </label>
+      <label>Cidade — digite e escolha (pode várias)
+        <input id="cityInput" type="text" placeholder="ex.: Campinas" autocomplete="off" />
+      </label>
+      <div id="citySug" class="sug"></div>
+      <div id="cityChips" class="chips"></div>
+      <label>Máx. resultados por cidade
+        <input id="maxResults" type="number" min="10" max="120" value="60" />
+      </label>
+      <button id="prospect" class="btn primary" disabled>Prospectar cidades</button>
+      <div id="prospectMsg" class="msg"></div>
+    </section>
+
+    <section class="card">
+      <h2>2 · Campanha (drip)</h2>
+      <div class="switches">
+        <label class="sw"><input type="checkbox" id="dryRun" checked><span>Modo teste (dry-run)</span></label>
+        <label class="sw"><input type="checkbox" id="paused"><span>Pausar disparos</span></label>
+      </div>
+      <div class="row2">
+        <button id="testSend" class="btn ghost">Enviar teste…</button>
+        <button id="resetC" class="btn ghost">Zerar contadores</button>
+      </div>
+      <button id="clearQ" class="btn ghost danger">Limpar fila</button>
+    </section>
+
+    <p class="foot">Local · <span id="hours">—</span></p>
+  </aside>
+
+  <!-- MAIN -->
+  <main class="main">
+    <div class="kpis">
+      <div class="kpi"><span class="k-lab">Mês</span><span class="k-val"><b id="mSent">0</b>/<span id="mCap">1000</span></span><span class="k-sub">enviados</span></div>
+      <div class="kpi"><span class="k-lab">Hoje</span><span class="k-val"><b id="dSent">0</b>/<span id="dCap">50</span></span><span class="k-sub">meta diária</span></div>
+      <div class="kpi"><span class="k-lab">Fila</span><span class="k-val" id="qCount">0</span><span class="k-sub">aguardando</span></div>
+      <div class="kpi"><span class="k-lab">Enviados</span><span class="k-val" id="sCount">0</span><span class="k-sub">total</span></div>
+      <div class="kpi"><span class="k-lab">Status</span><span class="k-val small" id="bizStatus">—</span><span class="k-sub" id="nextSend">—</span></div>
+    </div>
+
+    <div id="map"></div>
+
+    <div class="logwrap">
+      <div class="log-head"><span>Registro de atividade</span><span id="legend"><i class="dot q"></i>fila <i class="dot s"></i>enviado <i class="dot k"></i>pulado</span></div>
+      <div id="log" class="log"></div>
+    </div>
+  </main>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

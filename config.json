@@ -1,0 +1,30 @@
+{
+  "apify": {
+    "actorId": "nwua9Gu5YrADL7ZDj",
+    "language": null,
+    "countryCode": "br",
+    "maxResultsPerRun": 120
+  },
+  "neppo": {
+    "channel": "WHATSAPP",
+    "templateId": 110,
+    "groupName": "Lar Plasticos WhatsApp",
+    "groupConfId": 1,
+    "userId": 106,
+    "createdBy": "felipe_admin",
+    "senderUserId": null,
+    "headerImage": "https://cosmic-malasada-6032cd.netlify.app/prospec.jpg"
+  },
+  "campaign": {
+    "monthlyCap": 1000,
+    "businessDaysPerMonth": 20,
+    "dailyCap": 50,
+    "businessHourStart": 9,
+    "businessHourEnd": 17,
+    "timezone": "America/Sao_Paulo",
+    "jitterPct": 0.35,
+    "onlyMobileWhatsapp": true,
+    "dryRun": true,
+    "paused": false
+  }
+}

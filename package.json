@@ -1,0 +1,9 @@
+{
+  "name": "lara-prospeccoes",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Prospecção ativa: Apify Google Maps -> WhatsApp (Neppo) em drip controlado",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" }
+}

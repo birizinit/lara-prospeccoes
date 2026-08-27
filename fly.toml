@@ -1,0 +1,25 @@
+# Lara · Prospecções — Fly.io região gru (São Paulo).
+# ⚠️ MOTIVO DE ESTAR AQUI e não no Railway: a API da Neppo não responde a IP de fora do Brasil
+# (o Railway não tem região BR). Sankhya e Ploomes funcionam de qualquer lugar; a Neppo, não.
+app = "lara-prospeccoes"
+primary_region = "gru"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  DATA_DIR = "/data"
+  NEPPO_STRICT_TLS = "0"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # o drip roda por agendador interno: a máquina NÃO pode dormir, senão não dispara
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+[mounts]
+  source = "lara_data"
+  destination = "/data"

@@ -1,0 +1,20 @@
+name: Deploy Lara → Fly
+
+# A rede do sandbox do Claude NÃO alcança os builders do Fly (wsarecv no gateway 6pn),
+# então o deploy roda AQUI, no runner do GitHub (rede limpa). Push na main = deploy.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    concurrency: deploy-lara-prospeccoes
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Deploy
+        run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

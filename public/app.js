@@ -1,0 +1,126 @@
+/* Lara - Prospecções — front-end */
+'use strict';
+const $ = (id) => document.getElementById(id);
+const api = (p, opts) => fetch(p, opts).then(r => r.json());
+
+// ---------- mapa ----------
+const map = L.map('map', { zoomControl: true }).setView([-23.55, -46.63], 11);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  attribution: '© OpenStreetMap © CARTO', subdomains: 'abcd', maxZoom: 19,
+}).addTo(map);
+
+let heat = L.heatLayer([], { radius: 32, blur: 22, maxZoom: 14,
+  gradient: { 0.2: '#0d5c43', 0.5: '#28d192', 0.8: '#f2b34b', 1.0: '#ef6b6b' } }).addTo(map);
+const pinLayer = L.layerGroup().addTo(map);
+const cityMarkers = L.layerGroup().addTo(map);
+
+// ---------- busca de cidades (multi-seleção) ----------
+let selectedCities = [];
+let cityTimer = null;
+$('cityInput').addEventListener('input', (e) => {
+  const q = e.target.value.trim();
+  clearTimeout(cityTimer);
+  if (q.length < 3) { $('citySug').innerHTML = ''; return; }
+  $('citySug').innerHTML = '<div class="loading">buscando…</div>';
+  cityTimer = setTimeout(() => fetchCities(q), 450);
+});
+async function fetchCities(q) {
+  try {
+    const r = await api('/api/cities?q=' + encodeURIComponent(q));
+    const list = r.results || [];
+    if (!list.length) { $('citySug').innerHTML = '<div class="loading">nada encontrado</div>'; return; }
+    $('citySug').innerHTML = list.map((c, i) =>
+      `<div class="opt" data-i="${i}"><b>${escapeHtml(c.name)}</b><small>${escapeHtml(c.state || '')}</small></div>`).join('');
+    $('citySug').querySelectorAll('.opt').forEach(el => el.onclick = () => addCity(list[+el.dataset.i]));
+  } catch { $('citySug').innerHTML = '<div class="loading">erro na busca</div>'; }
+}
+function redrawCityMarkers() {
+  cityMarkers.clearLayers();
+  selectedCities.forEach(c => L.circleMarker([c.lat, c.lng],
+    { radius: 7, color: '#28d192', weight: 2, fillColor: '#28d192', fillOpacity: .5 })
+    .bindPopup('<b>' + escapeHtml(c.name) + '</b>').addTo(cityMarkers));
+  if (selectedCities.length) map.fitBounds(L.latLngBounds(selectedCities.map(c => [c.lat, c.lng])).pad(0.3), { maxZoom: 12 });
+}
+function addCity(c) {
+  if (selectedCities.some(x => x.display === c.display)) return;
+  selectedCities.push(c);
+  $('cityInput').value = ''; $('citySug').innerHTML = '';
+  redrawCityMarkers(); renderChips();
+}
+function removeCity(display) { selectedCities = selectedCities.filter(c => c.display !== display); redrawCityMarkers(); renderChips(); }
+function renderChips() {
+  $('cityChips').innerHTML = selectedCities.map(c =>
+    `<span class="chip"><b>${escapeHtml(c.name)}</b> <small>${escapeHtml(c.state || '')}</small><span class="x" data-d="${escapeHtml(c.display)}">×</span></span>`).join('');
+  $('cityChips').querySelectorAll('.x').forEach(el => el.onclick = () => removeCity(el.dataset.d));
+  updateProspectBtn();
+}
+function updateProspectBtn() { $('prospect').disabled = !(selectedCities.length && $('niche').value.trim()); }
+$('niche').addEventListener('input', updateProspectBtn);
+
+// ---------- prospectar ----------
+$('prospect').onclick = async () => {
+  const niche = $('niche').value.trim();
+  if (!niche) return setMsg('Informe o nicho.', true);
+  if (!selectedCities.length) return setMsg('Selecione ao menos uma cidade.', true);
+  $('prospect').disabled = true; setMsg(`Rodando Apify em ${selectedCities.length} cidade(s)… (1–3 min)`);
+  try {
+    const r = await api('/api/prospect', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ niche, cities: selectedCities, maxResults: +$('maxResults').value }) });
+    if (r.error) setMsg('Erro: ' + r.error, true);
+    else setMsg(`+${r.added} leads na fila (${r.skipped} repetidos). Total: ${r.total}.`);
+  } catch (e) { setMsg('Falha: ' + e.message, true); }
+  updateProspectBtn(); refresh();
+};
+function setMsg(t, err) { const m = $('prospectMsg'); m.textContent = t; m.className = 'msg' + (err ? ' err' : ''); }
+
+// ---------- controles ----------
+const ctrl = (action, value) => api('/api/control', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ action, value }) }).then(refresh);
+$('dryRun').onchange = (e) => ctrl('dryRun', e.target.checked);
+$('paused').onchange = (e) => ctrl(e.target.checked ? 'pause' : 'resume');
+$('resetC').onclick = () => confirm('Zerar contadores de mês/dia?') && ctrl('resetCounters');
+$('clearQ').onclick = () => confirm('Remover todos os leads da fila (não enviados)?') && ctrl('clearQueue');
+$('testSend').onclick = async () => {
+  const phone = prompt('Enviar WhatsApp de TESTE para (com DDD):', '');
+  if (!phone) return;
+  const r = await api('/api/control', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'testSend', phone }) });
+  alert(r.ok ? 'Enviado! id ' + r.id : 'Falha: ' + (r.error || 'erro'));
+  refresh();
+};
+
+// ---------- render/estado ----------
+const COLOR = { queued: '#f2b34b', sent: '#28d192', failed: '#ef6b6b', skipped: '#4a5a54' };
+async function refresh() {
+  let s; try { s = await api('/api/state'); } catch { return; }
+  const c = s.campaign;
+  $('mSent').textContent = c.monthSent; $('mCap').textContent = c.monthlyCap;
+  $('dSent').textContent = c.daySent; $('dCap').textContent = c.dailyCap;
+  $('qCount').textContent = s.counts.queued; $('sCount').textContent = s.counts.sent;
+  $('bizStatus').textContent = c.paused ? '⏸ pausado' : (c.dryRun ? '🧪 teste' : (c.businessNow ? '🟢 no ar' : '🌙 fora do horário'));
+  $('nextSend').textContent = c.businessNow && !c.paused ? `próx. ~${c.nextGapMin} min` : c.hours;
+  $('hours').textContent = c.hours;
+  $('dryRun').checked = c.dryRun; $('paused').checked = c.paused;
+
+  // mapa: heat p/ enviados, pins p/ fila/pulados
+  const hpts = [], sub = [];
+  pinLayer.clearLayers();
+  for (const l of s.leads) {
+    if (l.status === 'sent') hpts.push([l.lat, l.lng, 0.9]);
+    else {
+      L.circleMarker([l.lat, l.lng], { radius: 4, color: COLOR[l.status] || '#888', weight: 1,
+        fillColor: COLOR[l.status] || '#888', fillOpacity: .7 })
+        .bindPopup(`<b>${l.name}</b><br>${l.category || ''}<br>${l.phone || l.reason || ''}<br><i>${l.status}</i>`)
+        .addTo(pinLayer);
+    }
+  }
+  heat.setLatLngs(hpts);
+
+  // log
+  $('log').innerHTML = s.log.slice().reverse().map(e =>
+    `<div class="l-${e.level}"><time>${e.t.slice(11, 19)}</time>${escapeHtml(e.msg)}</div>`).join('');
+}
+function escapeHtml(s) { return String(s).replace(/[&<>]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[m])); }
+
+refresh();
+setInterval(refresh, 5000);

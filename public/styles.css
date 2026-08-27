@@ -1,0 +1,95 @@
+:root{
+  --bg:#0b1210; --panel:#0f1a16; --panel-2:#132420; --line:#1f332c;
+  --ink:#e8f1ec; --muted:#7f9a8f; --emerald:#28d192; --emerald-deep:#0d5c43;
+  --amber:#f2b34b; --red:#ef6b6b; --blue:#5aa0e0;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --serif:"Iowan Old Style","Palatino Linotype",Georgia,serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px}
+.app{display:grid;grid-template-columns:340px 1fr;height:100vh;overflow:hidden}
+
+/* sidebar */
+.side{background:linear-gradient(180deg,#0f1a16,#0b1210);border-right:1px solid var(--line);
+  padding:20px 18px;overflow-y:auto;display:flex;flex-direction:column;gap:16px}
+.brand{display:flex;gap:12px;align-items:center}
+.logo{width:42px;height:42px;border-radius:12px;background:linear-gradient(135deg,var(--emerald),var(--emerald-deep));
+  display:grid;place-items:center;font-family:var(--serif);font-weight:700;font-size:22px;color:#04140e;
+  box-shadow:0 6px 20px rgba(40,209,146,.25)}
+.brand h1{font-family:var(--serif);font-size:20px;margin:0;font-weight:600}
+.brand h1 span{color:var(--emerald)}
+.tag{color:var(--muted);font-size:11.5px;margin:2px 0 0}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
+.card h2{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--emerald);margin:0 0 10px}
+.hint{color:var(--muted);font-size:12px;margin:0 0 12px}
+label{display:block;font-size:12px;color:var(--muted);margin-bottom:12px}
+label b{color:var(--ink)}
+input[type=text],input[type=number]{width:100%;margin-top:6px;background:var(--panel-2);border:1px solid var(--line);
+  color:var(--ink);border-radius:9px;padding:10px 12px;font-size:14px;outline:none}
+input[type=text]:focus,input[type=number]:focus{border-color:var(--emerald)}
+input[type=range]{width:100%;margin-top:8px;accent-color:var(--emerald)}
+.coord{font-size:12px;color:var(--muted);background:var(--panel-2);border:1px dashed var(--line);
+  border-radius:8px;padding:8px 10px;margin-bottom:12px}
+
+/* busca de cidades */
+.sug{position:relative;margin:-6px 0 8px}
+.sug .opt{padding:9px 12px;background:var(--panel-2);border:1px solid var(--line);border-top:none;
+  cursor:pointer;font-size:13px}
+.sug .opt:first-child{border-top:1px solid var(--line);border-radius:8px 8px 0 0}
+.sug .opt:last-child{border-radius:0 0 8px 8px}
+.sug .opt:hover{background:#183029;color:var(--emerald)}
+.sug .opt small{color:var(--muted);display:block;font-size:11px}
+.sug .loading{padding:9px 12px;color:var(--muted);font-size:12px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+.chip{display:inline-flex;align-items:center;gap:7px;background:var(--emerald-deep);color:#dffcef;
+  border:1px solid #147a59;border-radius:999px;padding:5px 6px 5px 11px;font-size:12px;font-weight:600}
+.chip b{font-weight:600} .chip small{color:#8fe6c4;font-weight:400}
+.chip .x{cursor:pointer;width:17px;height:17px;border-radius:50%;background:rgba(0,0,0,.25);
+  display:grid;place-items:center;line-height:1;font-size:13px}
+.chip .x:hover{background:var(--red);color:#fff}
+
+.btn{width:100%;border:none;border-radius:10px;padding:12px;font-weight:600;font-size:13.5px;cursor:pointer;
+  transition:transform .12s,filter .2s,background .2s}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.primary{background:linear-gradient(135deg,var(--emerald),var(--emerald-deep));color:#04140e}
+.btn.primary:not(:disabled):hover{transform:translateY(-1px);filter:brightness(1.08)}
+.btn.ghost{background:var(--panel-2);color:var(--ink);border:1px solid var(--line)}
+.btn.ghost:hover{border-color:var(--emerald)}
+.btn.ghost.danger{color:var(--red)}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}
+.switches{display:flex;flex-direction:column;gap:10px;margin-bottom:12px}
+.sw{display:flex;align-items:center;gap:9px;color:var(--ink);font-size:13px;margin:0;cursor:pointer}
+.sw input{accent-color:var(--emerald);width:16px;height:16px}
+.msg{font-size:12px;margin-top:10px;min-height:16px;color:var(--emerald)}
+.msg.err{color:var(--red)}
+.foot{margin-top:auto;color:var(--muted);font-size:11px;text-align:center}
+
+/* main */
+.main{display:grid;grid-template-rows:auto 1fr auto;height:100vh;overflow:hidden}
+.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;padding:16px 18px}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px 14px;
+  display:flex;flex-direction:column;gap:2px;position:relative;overflow:hidden}
+.kpi::after{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--emerald)}
+.k-lab{font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.k-val{font-family:var(--serif);font-size:26px;font-weight:600;line-height:1.1}
+.k-val.small{font-size:15px;font-family:var(--sans);font-weight:700}
+.k-val b{color:var(--emerald)}
+.k-sub{font-size:11px;color:var(--muted)}
+
+#map{margin:0 18px;border-radius:16px;border:1px solid var(--line);overflow:hidden}
+.leaflet-container{background:#0a1512}
+
+.logwrap{padding:12px 18px 16px}
+.log-head{display:flex;justify-content:space-between;color:var(--muted);font-size:11.5px;
+  text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
+#legend{display:flex;gap:12px;align-items:center;text-transform:none;letter-spacing:0}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px;vertical-align:middle}
+.dot.q{background:var(--amber)} .dot.s{background:var(--emerald)} .dot.k{background:#4a5a54}
+.log{height:120px;overflow-y:auto;background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:10px 12px;font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.7}
+.log .l-info{color:var(--muted)} .log .l-sent{color:var(--emerald)} .log .l-dry{color:var(--blue)}
+.log .l-error{color:var(--red)} .log time{color:#4a5a54;margin-right:8px}
+
+@media (max-width:900px){ .app{grid-template-columns:1fr} .side{display:none} .kpis{grid-template-columns:repeat(2,1fr)} }
