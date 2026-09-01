@@ -478,6 +478,12 @@ function funilResumo() {
   return {
     geradoEm: new Date().toISOString(),
     campanha: snapshot().campaign,
+    // diagnostico: da para ver de fora se a integracao com o CRM esta de pe, sem ter de
+    // esperar alguem responder para descobrir que a chave nao chegou no servidor.
+    crm: { ligado: !!PL.key(), funil: PL.funil, etapa: PL.etapa, origem: PL.origem,
+           donos: PL.donos.map(d => d.nome),
+           criados: leads.filter(l => l.ploomesDealId).length,
+           aguardando: leads.filter(l => l.respondeuEm && !l.ploomesDealId).length },
     template: { id: CFG.neppo.templateId, nome: (tplCache && tplCache.elementName) || null,
                 texto: (tplCache && tplCache.text) || null, imagem: CFG.neppo.headerImage,
                 grupo: CFG.neppo.groupName },
