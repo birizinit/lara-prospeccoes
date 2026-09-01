@@ -271,6 +271,122 @@ async function neppoSend(phoneE164) {
   return { ok: false, error: `HTTP ${r.status} ${(r.text || '').slice(0, 160)}` };
 }
 
+// ---------- Ploomes: a resposta vira negócio no CRM ----------
+// ⚠️ ESCRITA no Ploomes (o resto do workspace é só leitura). Autorizada pelo Diretor em 01/09:
+// gatilho = o prospect RESPONDEU · dono = rodízio Priscilla × Gabriel Rodrigues (o mesmo par de
+// pré-vendas do bot da Neppo) · sem retroativo. Cada lead guarda o id criado → nunca duplica.
+const PL = {
+  key: () => process.env.PLOOMES_KEY || '',
+  funil: 40059663,          // Entradas e Prospecção
+  etapa: 40291620,          // Oportunidades (1ª etapa)
+  origem: 120004066,        // "Lara IA - Whatsapp" (já existia no CRM, nunca usada)
+  donos: [
+    { id: 120002975, nome: 'Priscilla Caetano' },
+    { id: 40040912, nome: 'Gabriel Rodrigues' },
+  ],
+  campoDescricao: 'deal_E556CA06-A55A-4D12-B703-8C052AF90E2A',   // "Descrição do Lead"
+};
+
+function plReq(rota, metodo, corpo) {
+  return new Promise((ok, err) => {
+    const body = corpo ? JSON.stringify(corpo) : null;
+    const h = { 'User-Key': PL.key(), 'Content-Type': 'application/json' };
+    if (body) h['Content-Length'] = Buffer.byteLength(body);
+    const r = https.request({ hostname: 'api2.ploomes.com', path: '/' + encodeURI(rota),
+      method: metodo || 'GET', headers: h, rejectUnauthorized: false }, (res) => {
+      let d = ''; res.on('data', (c) => d += c);
+      res.on('end', () => { let j = null; try { j = JSON.parse(d); } catch (_) {}
+        ok({ status: res.statusCode, json: j, text: d }); });
+    });
+    r.on('error', err); if (body) r.write(body); r.end();
+  });
+}
+
+/** DDD + 8 dígitos finais. ⚠️ Sem o DDD, "7135-3131" de Florianópolis casa com o de São Paulo —
+ *  aconteceu no cruzamento de 01/09 (Mix Utilidades virou CONTRANS). */
+function chaveFone(t) {
+  const d = String(t || '').replace(/\D/g, '');
+  const n = d.length > 11 ? d.slice(-11) : d;
+  return n.length >= 10 ? n.slice(0, 2) + n.slice(-8) : null;
+}
+
+/** Acha o contato pelo telefone, nas duas formas que o Ploomes usa (mascarada e crua). */
+async function plContatoPorFone(e164) {
+  const alvo = chaveFone(e164);
+  if (!alvo) return null;
+  const nac = String(e164).replace(/\D/g, '').slice(2), num = nac.slice(2);
+  const oito = num.slice(-8), masc = oito.slice(0, 4) + '-' + oito.slice(4);
+  for (const forma of [masc, num]) {
+    const r = await plReq("Contacts?$filter=Phones/any(p: contains(p/PhoneNumber,'" + forma + "'))" +
+      "&$expand=Phones($select=PhoneNumber)&$select=Id,Name&$top=10");
+    const achados = (r.json && r.json.value) || [];
+    const bom = achados.find((c) => (c.Phones || []).some((f) => chaveFone(f.PhoneNumber) === alvo));
+    if (bom) return bom;                        // só aceita quem bate DDD + 8 dígitos
+  }
+  return null;
+}
+
+/** Rodízio auto-balanceado: quem recebeu menos leva o próximo. Empate → último dígito do
+ *  telefone, para o MESMO prospect cair sempre com a mesma pessoa. */
+function plDono(e164) {
+  const conta = {};
+  for (const d of PL.donos) conta[d.id] = 0;
+  for (const l of leads) if (l.ploomesDonoId && conta[l.ploomesDonoId] !== undefined) conta[l.ploomesDonoId]++;
+  const [a, b] = PL.donos;
+  if (conta[a.id] !== conta[b.id]) return conta[a.id] < conta[b.id] ? a : b;
+  const ultimo = parseInt(String(e164).slice(-1), 10) || 0;
+  return PL.donos[ultimo % 2];
+}
+
+/** Cria contato (se não existir) + negócio. Devolve {dealId, contatoId, dono} ou {erro}. */
+async function plCriarNegocio(lead) {
+  if (!PL.key()) return { erro: 'PLOOMES_KEY ausente' };
+  if (lead.ploomesDealId) return { ja: true };            // idempotente: nunca cria 2x
+  const dono = plDono(lead.phoneNorm);
+
+  let contato = await plContatoPorFone(lead.phoneNorm);
+  if (!contato) {
+    const nac = String(lead.phoneNorm).replace(/\D/g, '').slice(2);
+    const c = await plReq('Contacts', 'POST', {
+      Name: String(lead.name || 'Prospect').slice(0, 100),
+      TypeId: 2,                                          // 2 = empresa/pessoa jurídica
+      OwnerId: dono.id,
+      OriginId: PL.origem,
+      // no formato que o Ploomes usa (+55 (34) 99991-3232) — é assim que a busca mascarada acha
+      Phones: [{ PhoneNumber: '+55 (' + nac.slice(0, 2) + ') ' + nac.slice(2, -4) + '-' + nac.slice(-4), TypeId: 1 }],
+    });
+    // ⚠️ o POST devolve envelope OData {value:[{...}]} — ler r.Id direto vem undefined
+    contato = ((c.json && (c.json.value || [c.json]))[0]) || null;
+    if (!contato || !contato.Id) return { erro: 'contato: HTTP ' + c.status + ' ' + String(c.text).slice(0, 140) };
+  }
+
+  const ctx = ['Prospecção ativa da Lara (Google Maps → WhatsApp).',
+    lead.city ? 'Cidade: ' + lead.city + '.' : '',
+    lead.category ? 'Ramo no Maps: ' + lead.category + '.' : '',
+    lead.niche ? 'Nicho buscado: ' + lead.niche + '.' : '',
+    'Abordado em ' + String(lead.sentAt || '').slice(0, 16).replace('T', ' ') + '.',
+    'RESPONDEU — a conversa está no grupo "' + CFG.neppo.groupName + '" da Neppo.',
+    lead.website ? 'Site: ' + lead.website : ''].filter(Boolean).join(' ');
+
+  const d = await plReq('Deals', 'POST', {
+    Title: '[LARA] ' + String(lead.name || 'Prospect').slice(0, 80),
+    ContactId: contato.Id,
+    PipelineId: PL.funil,
+    StageId: PL.etapa,
+    OwnerId: dono.id,
+    OriginId: PL.origem,
+    OtherProperties: [{ FieldKey: PL.campoDescricao, StringValue: ctx.slice(0, 900) }],
+  });
+  const deal = ((d.json && (d.json.value || [d.json]))[0]) || null;
+  if (!deal || !deal.Id) return { erro: 'negócio: HTTP ' + d.status + ' ' + String(d.text).slice(0, 140) };
+
+  lead.ploomesContatoId = contato.Id;
+  lead.ploomesDealId = deal.Id;
+  lead.ploomesDonoId = dono.id;
+  lead.ploomesEm = new Date().toISOString();
+  return { dealId: deal.Id, contatoId: contato.Id, dono: dono.nome, novo: !contato.Name };
+}
+
 // ---------- funil: o que aconteceu DEPOIS do disparo ----------
 // ⚠️ A Neppo NÃO deixa filtrar envio por template (`hsmTemplate` volta null e o filtro dá 0),
 // mas aceita `id EQNUM` — e a Lara guarda o msgId de cada disparo. Então é consulta por id.
@@ -300,7 +416,16 @@ async function sincronizarFunil(teto) {
       l.entrega = m.status || null;
       l.entregaEm = m.sentAt || null;
       l.erroMotivo = m.status === 'ERRO' ? (m.description || 'sem motivo informado') : null;
-      if (m.sessionId && !l.respondeuEm) { l.sessionId = m.sessionId; l.respondeuEm = m.updatedAt || new Date().toISOString(); }
+      if (m.sessionId && !l.respondeuEm) {
+        l.sessionId = m.sessionId; l.respondeuEm = m.updatedAt || new Date().toISOString();
+        // respondeu = lead quente: nasce no CRM agora, senão a conversa morre no WhatsApp
+        // (em 01/09, 19 responderam e NENHUMA virou cadastro no Ploomes)
+        try {
+          const r = await plCriarNegocio(l);
+          if (r.erro) pushLog('error', 'Ploomes ' + l.name + ': ' + r.erro);
+          else if (r.dealId) pushLog('sent', 'CRM · negócio #' + r.dealId + ' para ' + l.name + ' → ' + r.dono);
+        } catch (e) { pushLog('error', 'Ploomes ' + l.name + ': ' + e.message); }
+      }
       if (antes !== l.entrega) mudou++;
     } catch (e) { pushLog('error', 'funil ' + l.msgId + ': ' + e.message); break; }  // Neppo fora: para
   }
@@ -366,6 +491,7 @@ function funilResumo() {
       saiuSemConfirmar: ent('ENVIADA') + ent('PROCESSANDO'),
       entregues: chegou, lidos: ent('LIDA'), respondidos,
       erro: leads.filter(l => l.status === 'failed' || l.entrega === 'ERRO').length,
+      noCrm: leads.filter(l => l.ploomesDealId).length,
       semLeitura: semRetorno,
       dryRun: leads.filter(l => l.dryRun).length,
     },
@@ -377,7 +503,8 @@ function funilResumo() {
       .sort((a, b) => String(b.respondeuEm).localeCompare(String(a.respondeuEm)))
       .slice(0, 40)
       .map(l => ({ nome: l.name, cidade: l.city, categoria: l.category, fone: l.phoneNorm,
-                   enviadoEm: l.sentAt, respondeuEm: l.respondeuEm, entrega: l.entrega })),
+                   enviadoEm: l.sentAt, respondeuEm: l.respondeuEm, entrega: l.entrega,
+                   dealId: l.ploomesDealId || null, dono: l.ploomesDonoId || null })),
     ultimos: enviados.sort((a, b) => String(b.sentAt || '').localeCompare(String(a.sentAt || '')))
       .slice(0, 40)
       .map(l => ({ nome: l.name, cidade: l.city, fone: l.phoneNorm, enviadoEm: l.sentAt,
