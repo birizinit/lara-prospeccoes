@@ -352,6 +352,25 @@ function fmtFone(e164) {
   return n.length >= 10 ? '(' + n.slice(0, 2) + ') ' + n.slice(2, -4) + '-' + n.slice(-4) : String(e164 || '');
 }
 
+/** Título do negócio: quem é e como falar, direto na lista do funil (padrão do bot: LEAD VIA …). */
+function tituloDeal(lead) {
+  const nome = String(lead.name || 'Prospect').trim().slice(0, 60);
+  const fone = lead.phoneNorm ? ' - ' + fmtFone(lead.phoneNorm) : '';
+  return ('LEAD VIA LARA - ' + nome + fone).slice(0, 100);
+}
+
+/** Descrição do lead: começa pelo LUGAR (é o que o vendedor pergunta primeiro). */
+function descricaoDeal(lead) {
+  return ['Lugar: ' + (String(lead.city || '').trim() || 'não informado') + '.',
+    lead.phoneNorm ? 'WhatsApp: ' + fmtFone(lead.phoneNorm) + '.' : '',
+    lead.category ? 'Ramo no Maps: ' + lead.category + '.' : '',
+    lead.niche ? 'Nicho buscado: ' + lead.niche + '.' : '',
+    'Prospecção ativa da Lara (Google Maps → WhatsApp).',
+    lead.sentAt ? 'Abordado em ' + String(lead.sentAt).slice(0, 16).replace('T', ' ') + '.' : '',
+    'RESPONDEU — a conversa está no grupo "' + CFG.neppo.groupName + '" da Neppo.',
+    lead.website ? 'Site: ' + lead.website : ''].filter(Boolean).join(' ').slice(0, 900);
+}
+
 async function plCriarNegocio(lead) {
   if (!PL.key()) return { erro: 'PLOOMES_KEY ausente' };
   if (lead.ploomesDealId) return { ja: true };            // idempotente: nunca cria 2x
@@ -362,33 +381,51 @@ async function plCriarNegocio(lead) {
   // para medir orçamento/venda depois — o negócio segue SEM vínculo.
   const contato = await plContatoPorFone(lead.phoneNorm);
 
-  // ⚠️ sem contato vinculado, o telefone precisa estar AQUI — senão o vendedor não tem como ligar
-  const ctx = ['Prospecção ativa da Lara (Google Maps → WhatsApp).',
-    lead.phoneNorm ? 'WhatsApp: ' + fmtFone(lead.phoneNorm) + '.' : '',
-    lead.city ? 'Cidade: ' + lead.city + '.' : '',
-    lead.category ? 'Ramo no Maps: ' + lead.category + '.' : '',
-    lead.niche ? 'Nicho buscado: ' + lead.niche + '.' : '',
-    'Abordado em ' + String(lead.sentAt || '').slice(0, 16).replace('T', ' ') + '.',
-    'RESPONDEU — a conversa está no grupo "' + CFG.neppo.groupName + '" da Neppo.',
-    lead.website ? 'Site: ' + lead.website : ''].filter(Boolean).join(' ');
-
   const d = await plReq('Deals', 'POST', {
-    Title: '[LARA] ' + String(lead.name || 'Prospect').slice(0, 80),
+    Title: tituloDeal(lead),
     ContactId: null,                                      // negócio sem contato, por decisão
     PipelineId: PL.funil,
     StageId: PL.etapa,
     OwnerId: dono.id,
     OriginId: PL.origem,
-    OtherProperties: [{ FieldKey: PL.campoDescricao, StringValue: ctx.slice(0, 900) }],
+    OtherProperties: [{ FieldKey: PL.campoDescricao, StringValue: descricaoDeal(lead) }],
   });
   const deal = ((d.json && (d.json.value || [d.json]))[0]) || null;
   if (!deal || !deal.Id) return { erro: 'negócio: HTTP ' + d.status + ' ' + String(d.text).slice(0, 140) };
 
   if (contato && contato.Id) lead.ploomesContatoId = contato.Id;   // só para medir, não vincula
   lead.ploomesDealId = deal.Id;
+  lead.dealFmt = FORMATO_DEAL;
   lead.ploomesDonoId = dono.id;
   lead.ploomesEm = new Date().toISOString();
   return { dealId: deal.Id, contatoId: (contato && contato.Id) || null, dono: dono.nome };
+}
+
+/** Versão do formato de título/descrição do negócio. Subir este número faz o backfill rodar de
+ *  novo no próximo boot — é assim que uma mudança de formato alcança os negócios já criados. */
+const FORMATO_DEAL = 2;
+
+/** Reescreve título e descrição dos negócios criados num formato antigo. Idempotente: cada lead
+ *  guarda a versão que já recebeu. Roda uma vez por boot; o Ploomes corta em ~120 req/min. */
+async function backfillDeals(teto) {
+  if (!PL.key()) return { erro: 'PLOOMES_KEY ausente' };
+  const alvos = leads.filter(l => l.ploomesDealId && l.dealFmt !== FORMATO_DEAL).slice(0, teto || 60);
+  if (!alvos.length) return { alvos: 0 };
+  let ok = 0, falhou = 0;
+  for (const l of alvos) {
+    try {
+      const r = await plReq('Deals(' + l.ploomesDealId + ')', 'PATCH', {
+        Title: tituloDeal(l),
+        OtherProperties: [{ FieldKey: PL.campoDescricao, StringValue: descricaoDeal(l) }],
+      });
+      if (r.status >= 200 && r.status < 300) { l.dealFmt = FORMATO_DEAL; ok++; }
+      else { falhou++; pushLog('error', 'backfill deal ' + l.ploomesDealId + ': HTTP ' + r.status); }
+    } catch (e) { pushLog('error', 'backfill: ' + e.message); break; }
+    await new Promise(r => setTimeout(r, 450));
+  }
+  if (ok) persist();
+  pushLog('info', 'backfill dos negócios: ' + ok + ' atualizado(s)' + (falhou ? ' · ' + falhou + ' falharam' : ''));
+  return { alvos: alvos.length, ok, falhou };
 }
 
 // ---------- funil: o que aconteceu DEPOIS do disparo ----------
@@ -640,6 +677,7 @@ setInterval(() => sincronizarFunil(25).catch(() => {}), 5 * 60 * 1000);
 // orçamento e pedido levam dias, não minutos — meia hora basta e poupa chamada ao Ploomes
 setInterval(() => sincronizarCrm(20).catch(() => {}), 30 * 60 * 1000);
 setTimeout(() => sincronizarFunil(60).catch(() => {}), 25000);   // uma passada logo após o boot
+setTimeout(() => backfillDeals(60).catch(() => {}), 40000);      // alcança os negócios já criados
 
 // ---------- ingest leads ----------
 function addLeads(items, niche, city) {
