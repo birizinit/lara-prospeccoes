@@ -275,6 +275,13 @@ async function neppoSend(phoneE164) {
 // ⚠️ ESCRITA no Ploomes (o resto do workspace é só leitura). Autorizada pelo Diretor em 01/09:
 // gatilho = o prospect RESPONDEU · dono = rodízio Priscilla × Gabriel Rodrigues (o mesmo par de
 // pré-vendas do bot da Neppo) · sem retroativo. Cada lead guarda o id criado → nunca duplica.
+// Custo do disparo (o Diretor, 01/09): R$ 0,35 a mensagem + R$ 0,06 de spread da Neppo.
+// ⚠️ É o custo do ENVIO, não o da operação: não entra Apify, tempo de vendedor nem mídia.
+// Por isso o painel chama de "custo de disparo" e o CAC sai rotulado como parcial.
+const CUSTO_MSG = Number(process.env.CUSTO_MSG || 0.35);
+const CUSTO_SPREAD = Number(process.env.CUSTO_SPREAD || 0.06);
+const CUSTO_ENVIO = CUSTO_MSG + CUSTO_SPREAD;
+
 const PL = {
   key: () => process.env.PLOOMES_KEY || '',
   funil: 40059663,          // Entradas e Prospecção
@@ -402,6 +409,36 @@ async function statusDoEnvio(msgId) {
   return m || null;
 }
 
+/**
+ * O que aconteceu com quem virou negócio: orçou? comprou? Sem isto o funil para em
+ * "respondeu" e o CAC nunca fecha. Consulta por CONTATO (não por negócio): o cliente pode
+ * orçar num negócio e comprar em outro, e o que importa para o CAC é o cliente.
+ */
+async function sincronizarCrm(teto) {
+  if (!PL.key()) return { erro: 'PLOOMES_KEY ausente' };
+  const alvos = leads.filter(l => l.ploomesContatoId)
+    .sort((a, b) => String(a.crmEm || '').localeCompare(String(b.crmEm || '')))  // o mais defasado primeiro
+    .slice(0, teto || 20);
+  let mudou = 0;
+  for (const l of alvos) {
+    try {
+      const q = await plReq("Quotes?$filter=ContactId eq " + l.ploomesContatoId +
+        "&$select=Id,Amount,Date&$top=50");
+      const o = await plReq("Orders?$filter=ContactId eq " + l.ploomesContatoId +
+        "&$select=Id,Amount,Date&$top=50");
+      const cot = (q.json && q.json.value) || [], ped = (o.json && o.json.value) || [];
+      const antes = (l.orcamentos || {}).n + '|' + (l.vendas || {}).n;
+      l.orcamentos = { n: cot.length, valor: cot.reduce((a, x) => a + (x.Amount || 0), 0) };
+      l.vendas = { n: ped.length, valor: ped.reduce((a, x) => a + (x.Amount || 0), 0),
+                   primeira: ped.length ? ped.map(x => x.Date).sort()[0] : null };
+      l.crmEm = new Date().toISOString();
+      if (antes !== l.orcamentos.n + '|' + l.vendas.n) mudou++;
+    } catch (e) { pushLog('error', 'CRM ' + l.name + ': ' + e.message); break; }
+  }
+  if (mudou) { persist(); pushLog('info', 'CRM: ' + mudou + ' cliente(s) mudaram de estágio'); }
+  return { olhados: alvos.length, mudou };
+}
+
 /** Atualiza o funil dos disparos que ainda podem mudar. Teto por rodada: a API é lenta. */
 async function sincronizarFunil(teto) {
   const alvos = leads.filter(l => l.msgId && !l.dryRun && !FINAIS.has(l.entrega || ''))
@@ -498,9 +535,32 @@ function funilResumo() {
       entregues: chegou, lidos: ent('LIDA'), respondidos,
       erro: leads.filter(l => l.status === 'failed' || l.entrega === 'ERRO').length,
       noCrm: leads.filter(l => l.ploomesDealId).length,
+      negocios: leads.filter(l => l.ploomesDealId).length,
+      orcamentos: leads.filter(l => (l.orcamentos || {}).n > 0).length,
+      vendas: leads.filter(l => (l.vendas || {}).n > 0).length,
       semLeitura: semRetorno,
       dryRun: leads.filter(l => l.dryRun).length,
     },
+    custo: (function () {
+      const env = enviados.length;
+      const total = env * CUSTO_ENVIO;
+      const clientes = leads.filter(l => (l.vendas || {}).n > 0);
+      const receita = clientes.reduce((a, l) => a + ((l.vendas || {}).valor || 0), 0);
+      const emOrc = leads.filter(l => (l.orcamentos || {}).n > 0);
+      const div = (a, b) => (b ? a / b : null);   // sem base ainda → null, e o painel mostra "—"
+      return {
+        porMensagem: CUSTO_MSG, spread: CUSTO_SPREAD, porEnvio: CUSTO_ENVIO,
+        enviados: env, total,
+        porResposta: div(total, respondidos),
+        porNegocio: div(total, leads.filter(l => l.ploomesDealId).length),
+        porOrcamento: div(total, emOrc.length),
+        cac: div(total, clientes.length),                    // custo de DISPARO por cliente
+        clientes: clientes.length,
+        receita,
+        valorEmOrcamento: emOrc.reduce((a, l) => a + ((l.orcamentos || {}).valor || 0), 0),
+        retorno: div(receita, total),                        // quantas vezes o disparo se pagou
+      };
+    })(),
     erros: Object.entries(erros).sort((a, b) => b[1] - a[1]).map(([motivo, n]) => ({ motivo, n })),
     regioes: Object.values(porRegiao).sort((a, b) => b.enviados - a.enviados || b.leads - a.leads),
     nichos: conta('niche').map(([nicho, n]) => ({ nicho, n })),
@@ -572,6 +632,8 @@ setInterval(tick, 20000);
 // o funil se move DEPOIS do disparo (entregue/lido/respondido): sem isto o painel do
 // Diretor só mostraria 'enviada' e pareceria que ninguém lê.
 setInterval(() => sincronizarFunil(25).catch(() => {}), 5 * 60 * 1000);
+// orçamento e pedido levam dias, não minutos — meia hora basta e poupa chamada ao Ploomes
+setInterval(() => sincronizarCrm(20).catch(() => {}), 30 * 60 * 1000);
 setTimeout(() => sincronizarFunil(60).catch(() => {}), 25000);   // uma passada logo após o boot
 
 // ---------- ingest leads ----------
@@ -669,7 +731,7 @@ const server = http.createServer(async (req, res) => {
       if (veio !== chave) { res.writeHead(401, JSONH); return res.end('{"error":"chave inválida"}'); }
       try {
         try { await neppoTemplate(); } catch (e) { /* segue sem o texto do template */ }
-        if (u0.searchParams.get('sync') === '1') await sincronizarFunil(60);
+        if (u0.searchParams.get('sync') === '1') { await sincronizarFunil(60); await sincronizarCrm(40); }
         res.writeHead(200, JSONH);
         return res.end(JSON.stringify(funilResumo()));
       } catch (e) {
