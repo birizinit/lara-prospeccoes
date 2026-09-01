@@ -40,8 +40,28 @@ function pushLog(level, msg) {
   if (level === 'sent') alertaEvo('✅ Lara enviou · ' + msg);        // avisa cada disparo
   else if (level === 'error') alertaEvo('⚠️ Lara erro · ' + msg);   // avisa cada erro
 }
-function loadJSON(f, def) { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return def; } }
-function saveJSON(f, o) { fs.writeFileSync(f, JSON.stringify(o, null, 2)); }
+// ⚠️ Gravação ATÔMICA (.tmp + rename). Sem isto, o SIGKILL de um redeploy no meio da
+// escrita deixa o JSON truncado — e o loadJSON cai no default EM SILÊNCIO: some a fila
+// (leads.json) e zera o contador do mês, que é a trava do teto de 1000. Aconteceu em
+// 01/09: o dryRun voltou sozinho para o padrão depois de um deploy.
+function saveJSON(f, o) {
+  const tmp = f + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(o, null, 2));
+  fs.renameSync(tmp, f);                       // rename no mesmo disco é atômico
+}
+// Arquivo ilegível NÃO é o mesmo que arquivo ausente: no 1º caso guarda a cópia e grita,
+// senão o próximo save apaga por cima a única chance de recuperar.
+function loadJSON(f, def) {
+  let cru;
+  try { cru = fs.readFileSync(f, 'utf8'); } catch { return def; }   // não existe ainda: normal
+  try { return JSON.parse(cru); } catch (e) {
+    const bkp = f + '.corrompido-' + Date.now();
+    try { fs.writeFileSync(bkp, cru); } catch (_) {}
+    console.error('[estado] ' + path.basename(f) + ' ILEGÍVEL (' + cru.length + ' bytes) — ' +
+      'recomecei do zero; a cópia ficou em ' + bkp);
+    return def;
+  }
+}
 
 let state = loadJSON(STATE_FILE, { monthKey: '', dayKey: '', monthSent: 0, daySent: 0, lastSendAt: 0, runtimeCfg: {} });
 let leads = loadJSON(LEADS_FILE, []);
