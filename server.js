@@ -194,17 +194,36 @@ async function neppoAuth() {
   neppoTok = { token: r.json.access_token, exp: Date.now() + (r.json.expires_in - 120) * 1000 };
   return neppoTok.token;
 }
+/**
+ * Toda chamada autenticada passa por aqui. ⚠️ A Neppo emite UM token por credencial:
+ * outro consumidor (Briefing, Reconciliador, uma sonda manual) que peça token novo com a
+ * mesma conta INVALIDA o nosso — e o cache só expira pelo relógio, então sem isto a Lara
+ * ficaria uma hora sem disparar, em silêncio. No 401, descarta o cache e tenta UMA vez.
+ */
+async function neppoPost(url, body) {
+  let tok = await neppoAuth();
+  const bater = () => request(url, { method: 'POST',
+    headers: { Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+    body, rejectUnauthorized: NEPPO_TLS });
+  let r = await bater();
+  if (r.status === 401) {                       // desiste no 2o 401: laço aqui é pior que a falha
+    pushLog('info', 'Neppo 401 — token invalidado por outro consumidor; renovando');
+    neppoTok = { token: null, exp: 0 };
+    tok = await neppoAuth();
+    r = await bater();
+  }
+  return r;
+}
+
 let tplCache = null;
 async function neppoTemplate() {
   if (tplCache) return tplCache;
-  const tok = await neppoAuth();
   // ⚠️ a API corta em 50 por página (ignora size maior) — paginar até achar, senão templates
   // de id alto (ex.: 110) somem silenciosamente. Mesmo bug já corrigido no app Briefing.
   let t = null;
   for (let pg = 0; pg < 20 && !t; pg++) {
-    const r = await request('https://api.neppo.com.br/chatapi/1.0/api/hsm-template',
-      { method: 'POST', headers: { Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
-        body: { conditions: [], page: pg, size: 50 }, rejectUnauthorized: NEPPO_TLS });
+    const r = await neppoPost('https://api.neppo.com.br/chatapi/1.0/api/hsm-template',
+      { conditions: [], page: pg, size: 50 });
     const list = (r.json && r.json.results) || [];
     t = list.find(x => x.id === CFG.neppo.templateId);
     if (list.length < 50) break;
@@ -215,7 +234,6 @@ async function neppoTemplate() {
   return tplCache;
 }
 async function neppoSend(phoneE164) {
-  const tok = await neppoAuth();
   const tpl = await neppoTemplate();
   // o template pode ter HEADER de mídia (ex.: 110 fixo_lara usa 1 imagem) — vai em `medias`
   const img = CFG.neppo.headerImage;
@@ -228,8 +246,7 @@ async function neppoSend(phoneE164) {
     createdBy: CFG.neppo.createdBy, userId: CFG.neppo.userId, senderUserId: CFG.neppo.senderUserId,
     groupConfId: CFG.neppo.groupConfId, generatedSession: 0,
   };
-  const r = await request('https://api.neppo.com.br/chatapi/1.0/api/direct-message/save',
-    { method: 'POST', headers: { Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body, rejectUnauthorized: NEPPO_TLS });
+  const r = await neppoPost('https://api.neppo.com.br/chatapi/1.0/api/direct-message/save', body);
   if (r.status >= 200 && r.status < 300 && r.json && r.json.id) return { ok: true, id: r.json.id };
   return { ok: false, error: `HTTP ${r.status} ${(r.text || '').slice(0, 160)}` };
 }
