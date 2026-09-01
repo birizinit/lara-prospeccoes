@@ -89,6 +89,32 @@ $('testSend').onclick = async () => {
   refresh();
 };
 
+let nichePronto = false;
+
+// ---------- ajustes da campanha ----------
+$('cfgSave').onclick = async () => {
+  const b = $('cfgSave'), m = $('cfgMsg');
+  b.disabled = true; b.textContent = 'Salvando…';
+  try {
+    const r = await api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        dailyCap: +$('cfgDaily').value, monthlyCap: +$('cfgMonthly').value,
+        hourStart: +$('cfgH1').value, hourEnd: +$('cfgH2').value,
+        niche: $('cfgNiche').value,
+      }) });
+    const c = r.config || {};
+    // mostro o que o servidor GRAVOU, não o que eu digitei: se o teto de 50/dia cortou,
+    // o número muda na tela e a pessoa vê o porquê.
+    m.textContent = 'Salvo: ' + c.dailyCap + '/dia · ' + c.monthlyCap + '/mês · ' + c.hourStart + 'h às ' + c.hourEnd + 'h';
+    m.className = 'msg ok';
+    if (c.niche) { $('niche').value = c.niche; updateProspectBtn(); }
+    refresh();
+  } catch (e) {
+    m.textContent = e.message || 'não consegui salvar'; m.className = 'msg err';
+  }
+  b.disabled = false; b.textContent = 'Salvar ajustes';
+};
+
 // ---------- render/estado ----------
 const COLOR = { queued: '#f2b34b', sent: '#28d192', failed: '#ef6b6b', skipped: '#4a5a54' };
 async function refresh() {
@@ -101,6 +127,21 @@ async function refresh() {
   $('nextSend').textContent = c.businessNow && !c.paused ? `próx. ~${c.nextGapMin} min` : c.hours;
   $('hours').textContent = c.hours;
   $('dryRun').checked = c.dryRun; $('paused').checked = c.paused;
+
+  // config: nao sobrescreve o campo que esta em foco (o poll roda a cada poucos segundos)
+  const cfg = c.config || {};
+  const põe = (id, v) => { const el = $(id); if (el && document.activeElement !== el && v != null) el.value = v; };
+  põe('cfgDaily', cfg.dailyCap); põe('cfgMonthly', cfg.monthlyCap);
+  põe('cfgH1', cfg.hourStart); põe('cfgH2', cfg.hourEnd); põe('cfgNiche', cfg.niche);
+  const h = $('cfgHint');
+  if (h) {
+    const uteis = 21, teto = (cfg.dailyCap || 0) * uteis;
+    h.textContent = 'Só dias úteis, de segunda a sexta. No ritmo de ' + (cfg.dailyCap || 0)
+      + '/dia dá ~' + teto + ' por mês'
+      + (teto > (cfg.monthlyCap || 0) ? ' — acima do teto de ' + (cfg.monthlyCap || 0) + ', que vai travar antes do fim do mês.' : '.');
+  }
+  // o nicho padrão entra no campo de prospecção na primeira carga
+  if (!nichePronto && cfg.niche && !$('niche').value) { $('niche').value = cfg.niche; nichePronto = true; updateProspectBtn(); }
 
   // mapa: heat p/ enviados, pins p/ fila/pulados
   const hpts = [], sub = [];

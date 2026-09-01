@@ -64,6 +64,7 @@ input[type=range]{width:100%;margin-top:8px;accent-color:var(--emerald)}
 .sw input{accent-color:var(--emerald);width:16px;height:16px}
 .msg{font-size:12px;margin-top:10px;min-height:16px;color:var(--emerald)}
 .msg.err{color:var(--red)}
+.msg.ok{color:var(--emerald)}
 .foot{margin-top:auto;color:var(--muted);font-size:11px;text-align:center}
 
 /* main */

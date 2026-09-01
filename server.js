@@ -45,9 +45,20 @@ function saveJSON(f, o) { fs.writeFileSync(f, JSON.stringify(o, null, 2)); }
 
 let state = loadJSON(STATE_FILE, { monthKey: '', dayKey: '', monthSent: 0, daySent: 0, lastSendAt: 0, runtimeCfg: {} });
 let leads = loadJSON(LEADS_FILE, []);
-// runtime overrides (paused/dryRun) persistem por cima do config
-const rt = Object.assign({ paused: CFG.campaign.paused, dryRun: CFG.campaign.dryRun }, state.runtimeCfg || {});
-function persist() { state.runtimeCfg = { paused: rt.paused, dryRun: rt.dryRun }; saveJSON(STATE_FILE, state); saveJSON(LEADS_FILE, leads); }
+// runtime overrides persistem por cima do config.json: o que se ajusta no painel
+// mora aqui (e no volume), para sobreviver a redeploy sem precisar mexer em codigo.
+const RT_CAMPOS = ['paused', 'dryRun', 'dailyCap', 'monthlyCap', 'hourStart', 'hourEnd', 'niche', 'cities'];
+const rt = Object.assign({
+  paused: CFG.campaign.paused, dryRun: CFG.campaign.dryRun,
+  dailyCap: CFG.campaign.dailyCap, monthlyCap: CFG.campaign.monthlyCap,
+  hourStart: CFG.campaign.businessHourStart, hourEnd: CFG.campaign.businessHourEnd,
+  niche: CFG.campaign.niche || '', cities: CFG.campaign.cities || [],
+}, state.runtimeCfg || {});
+function persist() {
+  state.runtimeCfg = {};
+  for (const k of RT_CAMPOS) state.runtimeCfg[k] = rt[k];
+  saveJSON(STATE_FILE, state); saveJSON(LEADS_FILE, leads);
+}
 
 // ---------- alerta Evolution (WhatsApp interno p/ o Gabriel) ----------
 const EVO = {
@@ -233,15 +244,16 @@ function spParts() {
     hour: parseInt(p.hour, 10), minute: parseInt(p.minute, 10), wd: weekdayMap[p.weekday] };
 }
 function isBusinessNow(t) {
-  return t.wd >= 1 && t.wd <= 5 && t.hour >= CFG.campaign.businessHourStart && t.hour < CFG.campaign.businessHourEnd;
+  // seg-sex, dentro da janela configurada no painel (fim de semana nunca dispara)
+  return t.wd >= 1 && t.wd <= 5 && t.hour >= rt.hourStart && t.hour < rt.hourEnd;
 }
 function rollovers(t) {
   if (state.monthKey !== t.monthKey) { state.monthKey = t.monthKey; state.monthSent = 0; }
   if (state.dayKey !== t.dayKey) { state.dayKey = t.dayKey; state.daySent = 0; }
 }
 function nextGapMs(t) {
-  const remainDaily = Math.max(1, CFG.campaign.dailyCap - state.daySent);
-  const minsLeft = Math.max(1, (CFG.campaign.businessHourEnd - (t.hour + t.minute / 60)) * 60);
+  const remainDaily = Math.max(1, rt.dailyCap - state.daySent);
+  const minsLeft = Math.max(1, (rt.hourEnd - (t.hour + t.minute / 60)) * 60);
   const gap = (minsLeft / remainDaily) * 60000;
   const j = 1 + (Math.random() * 2 - 1) * CFG.campaign.jitterPct;
   return gap * j;
@@ -255,8 +267,8 @@ async function tick() {
     rollovers(t);
     if (rt.paused) return;
     if (!isBusinessNow(t)) return;
-    if (state.monthSent >= CFG.campaign.monthlyCap) return;
-    if (state.daySent >= CFG.campaign.dailyCap) return;
+    if (state.monthSent >= rt.monthlyCap) return;
+    if (state.daySent >= rt.dailyCap) return;
     if (Date.now() - state.lastSendAt < nextGapMs(t)) return;
     const lead = queued().find(l => l.phoneNorm && (!CFG.campaign.onlyMobileWhatsapp || l.isMobile));
     if (!lead) return;
@@ -309,11 +321,13 @@ function snapshot() {
   return {
     campaign: {
       monthKey: state.monthKey, dayKey: state.dayKey,
-      monthSent: state.monthSent, monthlyCap: CFG.campaign.monthlyCap,
-      daySent: state.daySent, dailyCap: CFG.campaign.dailyCap,
+      monthSent: state.monthSent, monthlyCap: rt.monthlyCap,
+      daySent: state.daySent, dailyCap: rt.dailyCap,
       businessNow: isBusinessNow(t), paused: rt.paused, dryRun: rt.dryRun,
       nextGapMin: Math.round(nextGapMs(t) / 60000), lastSendAt: state.lastSendAt,
-      hours: `${CFG.campaign.businessHourStart}h–${CFG.campaign.businessHourEnd}h ${CFG.campaign.timezone}`,
+      hours: `${rt.hourStart}h–${rt.hourEnd}h ${CFG.campaign.timezone} · seg a sex`,
+      config: { dailyCap: rt.dailyCap, monthlyCap: rt.monthlyCap, hourStart: rt.hourStart,
+                hourEnd: rt.hourEnd, niche: rt.niche, cities: rt.cities },
     },
     counts: { total: leads.length, queued: byStatus.queued || 0, sent: byStatus.sent || 0, failed: byStatus.failed || 0, skipped: byStatus.skipped || 0 },
     leads: leads.map(l => ({ id: l.id, name: l.name, lat: l.lat, lng: l.lng, status: l.status, category: l.category, phone: l.phoneNorm, reason: l.reason })),
@@ -406,6 +420,32 @@ const server = http.createServer(async (req, res) => {
       pushLog('info', `Apify: +${added} leads (${skipped} repetidos) de ${locs.length} cidade(s).`);
       return send(200, { ok: true, added, skipped, total: leads.length });
     }
+    // ajustes da campanha pelo painel (nao precisa mexer no config.json nem redeployar)
+    if (req.method === 'POST' && u.pathname === '/api/config') {
+      const p = JSON.parse(await body(req) || '{}');
+      const num = (v, min, max, atual) => {
+        const n = Math.round(Number(v));
+        return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : atual;
+      };
+      // TETO DURO de 50/dia: e a cadencia que nao parece robo. Deixar digitar 500 aqui
+      // seria entregar o numero da Lar para a Meta marcar como spam.
+      if (p.dailyCap !== undefined) rt.dailyCap = num(p.dailyCap, 1, 50, rt.dailyCap);
+      if (p.monthlyCap !== undefined) rt.monthlyCap = num(p.monthlyCap, 1, 2000, rt.monthlyCap);
+      if (p.hourStart !== undefined) rt.hourStart = num(p.hourStart, 0, 23, rt.hourStart);
+      if (p.hourEnd !== undefined) rt.hourEnd = num(p.hourEnd, 1, 24, rt.hourEnd);
+      if (rt.hourEnd <= rt.hourStart) rt.hourEnd = Math.min(24, rt.hourStart + 1);  // janela precisa existir
+      if (p.niche !== undefined) rt.niche = String(p.niche || '').trim().slice(0, 80);
+      if (Array.isArray(p.cities)) {
+        rt.cities = p.cities.slice(0, 12)
+          .map((c) => ({ name: String(c.name || '').slice(0, 80), display: String(c.display || c.name || '').slice(0, 120) }))
+          .filter((c) => c.display);
+      }
+      pushLog('info', `config: ${rt.dailyCap}/dia · ${rt.monthlyCap}/mes · ${rt.hourStart}h–${rt.hourEnd}h`
+        + (rt.niche ? ` · nicho "${rt.niche}"` : '') + (rt.cities.length ? ` · ${rt.cities.length} cidade(s)` : ''));
+      persist();
+      return send(200, { ok: true, config: snapshot().campaign.config });
+    }
+
     if (req.method === 'POST' && u.pathname === '/api/control') {
       const p = JSON.parse(await body(req) || '{}');
       if (p.action === 'pause') rt.paused = true;
