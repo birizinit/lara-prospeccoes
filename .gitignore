@@ -3,3 +3,4 @@ state.json
 leads.json
 node_modules/
 *.log
+*.bak*

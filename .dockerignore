@@ -4,3 +4,5 @@ node_modules/
 state.json
 leads.json
 .git
+*.bak*
+_*.json
