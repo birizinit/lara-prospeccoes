@@ -19,12 +19,14 @@
     "monthlyCap": 1000,
     "businessDaysPerMonth": 20,
     "dailyCap": 50,
-    "businessHourStart": 9,
-    "businessHourEnd": 17,
+    "businessHourStart": 8,
+    "businessHourEnd": 19,
     "timezone": "America/Sao_Paulo",
     "jitterPct": 0.35,
     "onlyMobileWhatsapp": true,
     "dryRun": true,
-    "paused": false
+    "paused": false,
+    "niche": "revenda de plásticos",
+    "cities": []
   }
 }
