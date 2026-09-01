@@ -271,6 +271,120 @@ async function neppoSend(phoneE164) {
   return { ok: false, error: `HTTP ${r.status} ${(r.text || '').slice(0, 160)}` };
 }
 
+// ---------- funil: o que aconteceu DEPOIS do disparo ----------
+// ⚠️ A Neppo NÃO deixa filtrar envio por template (`hsmTemplate` volta null e o filtro dá 0),
+// mas aceita `id EQNUM` — e a Lara guarda o msgId de cada disparo. Então é consulta por id.
+// Estados: PROCESSANDO → ENVIADA → RECEBIDA → LIDA · ou ERRO (o motivo vem em `description`).
+// ⚠️ RESPOSTA = `sessionId` preenchido no PRÓPRIO envio (a sessão nasce quando o prospect
+// responde). O caminho oposto não serve: `directMessageId` na sessão veio nulo em 572 sessões.
+const FINAIS = new Set(['LIDA', 'ERRO']);            // o resto ainda pode evoluir
+
+async function statusDoEnvio(msgId) {
+  const r = await neppoPost('https://api.neppo.com.br/chatapi/1.0/api/direct-message',
+    { conditions: [{ key: 'id', value: String(msgId), operator: 'EQNUM', logic: 'AND' }], page: 0, size: 2 });
+  const m = ((r.json && r.json.results) || [])[0];
+  return m || null;
+}
+
+/** Atualiza o funil dos disparos que ainda podem mudar. Teto por rodada: a API é lenta. */
+async function sincronizarFunil(teto) {
+  const alvos = leads.filter(l => l.msgId && !l.dryRun && !FINAIS.has(l.entrega || ''))
+    .sort((a, b) => String(b.sentAt || '').localeCompare(String(a.sentAt || '')))   // recentes primeiro
+    .slice(0, teto || 40);
+  let mudou = 0;
+  for (const l of alvos) {
+    try {
+      const m = await statusDoEnvio(l.msgId);
+      if (!m) continue;
+      const antes = l.entrega;
+      l.entrega = m.status || null;
+      l.entregaEm = m.sentAt || null;
+      l.erroMotivo = m.status === 'ERRO' ? (m.description || 'sem motivo informado') : null;
+      if (m.sessionId && !l.respondeuEm) { l.sessionId = m.sessionId; l.respondeuEm = m.updatedAt || new Date().toISOString(); }
+      if (antes !== l.entrega) mudou++;
+    } catch (e) { pushLog('error', 'funil ' + l.msgId + ': ' + e.message); break; }  // Neppo fora: para
+  }
+  if (mudou) { persist(); pushLog('info', `funil atualizado: ${mudou} disparo(s) mudaram de estado`); }
+  return { olhados: alvos.length, mudou };
+}
+
+/** O retrato que o cockpit consome. Números CRUS, o painel decide como mostrar. */
+function funilResumo() {
+  const enviados = leads.filter(l => l.status === 'sent' && !l.dryRun);
+  const ent = (st) => enviados.filter(l => l.entrega === st).length;
+  const chegou = enviados.filter(l => l.entrega === 'RECEBIDA' || l.entrega === 'LIDA').length;
+  const respondidos = enviados.filter(l => l.respondeuEm).length;
+  const semRetorno = enviados.filter(l => !l.entrega).length;   // ainda não consultado
+
+  const conta = (campo) => {
+    const m = {};
+    for (const l of leads) { const k = (l[campo] || '').trim() || '(não informado)'; m[k] = (m[k] || 0) + 1; }
+    return Object.entries(m).sort((a, b) => b[1] - a[1]);
+  };
+  const porRegiao = {};
+  for (const l of leads) {
+    const c = (l.city || '').trim() || '(sem cidade)';
+    const r = porRegiao[c] || (porRegiao[c] = { cidade: c, leads: 0, enviados: 0, entregues: 0, lidos: 0, respondidos: 0, erro: 0 });
+    r.leads++;
+    if (l.status === 'sent' && !l.dryRun) {
+      r.enviados++;
+      if (l.entrega === 'RECEBIDA' || l.entrega === 'LIDA') r.entregues++;
+      if (l.entrega === 'LIDA') r.lidos++;
+      if (l.respondeuEm) r.respondidos++;
+    }
+    if (l.status === 'failed' || l.entrega === 'ERRO') r.erro++;
+  }
+  const erros = {};
+  for (const l of leads) {
+    if (l.entrega === 'ERRO' || l.status === 'failed') {
+      const k = (l.erroMotivo || l.error || 'sem motivo informado').slice(0, 120);
+      erros[k] = (erros[k] || 0) + 1;
+    }
+  }
+  const porDia = {};
+  for (const l of enviados) {
+    const d = String(l.sentAt || '').slice(0, 10); if (!d) continue;
+    const x = porDia[d] || (porDia[d] = { dia: d, enviados: 0, entregues: 0, respondidos: 0 });
+    x.enviados++;
+    if (l.entrega === 'RECEBIDA' || l.entrega === 'LIDA') x.entregues++;
+    if (l.respondeuEm) x.respondidos++;
+  }
+
+  return {
+    geradoEm: new Date().toISOString(),
+    campanha: snapshot().campaign,
+    template: { id: CFG.neppo.templateId, nome: (tplCache && tplCache.elementName) || null,
+                texto: (tplCache && tplCache.text) || null, imagem: CFG.neppo.headerImage,
+                grupo: CFG.neppo.groupName },
+    funil: {
+      capturados: leads.length,
+      semTelefone: leads.filter(l => l.status === 'skipped' && /sem telefone/.test(l.reason || '')).length,
+      fixo: leads.filter(l => l.status === 'skipped' && /fixo/.test(l.reason || '')).length,
+      naFila: leads.filter(l => l.status === 'queued').length,
+      enviados: enviados.length,
+      // ⚠️ "chegou" = o WhatsApp confirmou (RECEBIDA/LIDA). ENVIADA = saiu, sem confirmação ainda.
+      saiuSemConfirmar: ent('ENVIADA') + ent('PROCESSANDO'),
+      entregues: chegou, lidos: ent('LIDA'), respondidos,
+      erro: leads.filter(l => l.status === 'failed' || l.entrega === 'ERRO').length,
+      semLeitura: semRetorno,
+      dryRun: leads.filter(l => l.dryRun).length,
+    },
+    erros: Object.entries(erros).sort((a, b) => b[1] - a[1]).map(([motivo, n]) => ({ motivo, n })),
+    regioes: Object.values(porRegiao).sort((a, b) => b.enviados - a.enviados || b.leads - a.leads),
+    nichos: conta('niche').map(([nicho, n]) => ({ nicho, n })),
+    porDia: Object.values(porDia).sort((a, b) => a.dia.localeCompare(b.dia)),
+    respondidosLista: enviados.filter(l => l.respondeuEm)
+      .sort((a, b) => String(b.respondeuEm).localeCompare(String(a.respondeuEm)))
+      .slice(0, 40)
+      .map(l => ({ nome: l.name, cidade: l.city, categoria: l.category, fone: l.phoneNorm,
+                   enviadoEm: l.sentAt, respondeuEm: l.respondeuEm, entrega: l.entrega })),
+    ultimos: enviados.sort((a, b) => String(b.sentAt || '').localeCompare(String(a.sentAt || '')))
+      .slice(0, 40)
+      .map(l => ({ nome: l.name, cidade: l.city, fone: l.phoneNorm, enviadoEm: l.sentAt,
+                   entrega: l.entrega || 'aguardando', respondeu: !!l.respondeuEm, erro: l.erroMotivo || null })),
+  };
+}
+
 // ---------- tempo / horário comercial (São Paulo) ----------
 function spParts() {
   const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: CFG.campaign.timezone, hour12: false,
@@ -322,6 +436,10 @@ async function tick() {
   } catch (e) { pushLog('error', 'tick: ' + e.message); }
 }
 setInterval(tick, 20000);
+// o funil se move DEPOIS do disparo (entregue/lido/respondido): sem isto o painel do
+// Diretor só mostraria 'enviada' e pareceria que ninguém lê.
+setInterval(() => sincronizarFunil(25).catch(() => {}), 5 * 60 * 1000);
+setTimeout(() => sincronizarFunil(60).catch(() => {}), 25000);   // uma passada logo após o boot
 
 // ---------- ingest leads ----------
 function addLeads(items, niche, city) {
@@ -377,6 +495,7 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
 
 // ---------- login (cookie assinado, sem libs) — protege os controles de disparo ----------
 const crypto = require('crypto');
+const JSONH = { 'Content-Type': 'application/json; charset=utf-8' };
 const AUTH_USER = process.env.LARA_USER || '';
 const AUTH_PASS = process.env.LARA_PASS || '';
 const SECRET = process.env.SESSION_SECRET || crypto.randomBytes(24).toString('hex');
@@ -404,6 +523,28 @@ font:inherit;font-weight:600;cursor:pointer}.e{color:#C4372C;font-size:13px;marg
 <button>Entrar</button>__ERR__</form>`;
 
 const server = http.createServer(async (req, res) => {
+  // ---------- ponte para o cockpit (máquina-a-máquina, fora do login de navegador) ----------
+  // ⚠️ A Lara é a DONA do token da Neppo. O cockpit NÃO pode consultar a Neppo por conta
+  // própria: pediria token novo e invalidaria o nosso a cada refresh do Diretor (foi o que
+  // congelou o estoque da Shopee por 12 dias em 26/08). Aqui só se lê o que a Lara já apurou.
+  {
+    const u0 = new URL(req.url, 'http://x');
+    if (u0.pathname === '/api/cockpit/lara') {
+      const chave = process.env.COCKPIT_KEY || '';
+      const veio = req.headers['x-cockpit-key'] || u0.searchParams.get('key') || '';
+      if (!chave) { res.writeHead(503, JSONH); return res.end('{"error":"COCKPIT_KEY não configurada"}'); }
+      if (veio !== chave) { res.writeHead(401, JSONH); return res.end('{"error":"chave inválida"}'); }
+      try {
+        try { await neppoTemplate(); } catch (e) { /* segue sem o texto do template */ }
+        if (u0.searchParams.get('sync') === '1') await sincronizarFunil(60);
+        res.writeHead(200, JSONH);
+        return res.end(JSON.stringify(funilResumo()));
+      } catch (e) {
+        res.writeHead(500, JSONH); return res.end(JSON.stringify({ error: e.message }));
+      }
+    }
+  }
+
   // gate: só passa quem tem cookie válido (se LARA_USER/PASS estiverem configurados)
   if (AUTH_USER && AUTH_PASS) {
     const url0 = new URL(req.url, 'http://x');
