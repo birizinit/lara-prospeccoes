@@ -346,28 +346,25 @@ function plDono(e164) {
 }
 
 /** Cria contato (se não existir) + negócio. Devolve {dealId, contatoId, dono} ou {erro}. */
+/** +5511999998888 -> (11) 99999-8888 — o telefone legível na descrição do negócio. */
+function fmtFone(e164) {
+  const n = String(e164 || '').replace(/\D/g, '').replace(/^55/, '');
+  return n.length >= 10 ? '(' + n.slice(0, 2) + ') ' + n.slice(2, -4) + '-' + n.slice(-4) : String(e164 || '');
+}
+
 async function plCriarNegocio(lead) {
   if (!PL.key()) return { erro: 'PLOOMES_KEY ausente' };
   if (lead.ploomesDealId) return { ja: true };            // idempotente: nunca cria 2x
   const dono = plDono(lead.phoneNorm);
 
-  let contato = await plContatoPorFone(lead.phoneNorm);
-  if (!contato) {
-    const nac = String(lead.phoneNorm).replace(/\D/g, '').slice(2);
-    const c = await plReq('Contacts', 'POST', {
-      Name: String(lead.name || 'Prospect').slice(0, 100),
-      TypeId: 2,                                          // 2 = empresa/pessoa jurídica
-      OwnerId: dono.id,
-      OriginId: PL.origem,
-      // no formato que o Ploomes usa (+55 (34) 99991-3232) — é assim que a busca mascarada acha
-      Phones: [{ PhoneNumber: '+55 (' + nac.slice(0, 2) + ') ' + nac.slice(2, -4) + '-' + nac.slice(-4), TypeId: 1 }],
-    });
-    // ⚠️ o POST devolve envelope OData {value:[{...}]} — ler r.Id direto vem undefined
-    contato = ((c.json && (c.json.value || [c.json]))[0]) || null;
-    if (!contato || !contato.Id) return { erro: 'contato: HTTP ' + c.status + ' ' + String(c.text).slice(0, 140) };
-  }
+  // ⚠️ NÃO cria contato (decisão do Diretor 01/09, igual ao bot v9): prospect do Google Maps não
+  // é cliente e não pode poluir a base. Se o telefone JÁ é de um contato do CRM, guarda o id só
+  // para medir orçamento/venda depois — o negócio segue SEM vínculo.
+  const contato = await plContatoPorFone(lead.phoneNorm);
 
+  // ⚠️ sem contato vinculado, o telefone precisa estar AQUI — senão o vendedor não tem como ligar
   const ctx = ['Prospecção ativa da Lara (Google Maps → WhatsApp).',
+    lead.phoneNorm ? 'WhatsApp: ' + fmtFone(lead.phoneNorm) + '.' : '',
     lead.city ? 'Cidade: ' + lead.city + '.' : '',
     lead.category ? 'Ramo no Maps: ' + lead.category + '.' : '',
     lead.niche ? 'Nicho buscado: ' + lead.niche + '.' : '',
@@ -377,7 +374,7 @@ async function plCriarNegocio(lead) {
 
   const d = await plReq('Deals', 'POST', {
     Title: '[LARA] ' + String(lead.name || 'Prospect').slice(0, 80),
-    ContactId: contato.Id,
+    ContactId: null,                                      // negócio sem contato, por decisão
     PipelineId: PL.funil,
     StageId: PL.etapa,
     OwnerId: dono.id,
@@ -387,11 +384,11 @@ async function plCriarNegocio(lead) {
   const deal = ((d.json && (d.json.value || [d.json]))[0]) || null;
   if (!deal || !deal.Id) return { erro: 'negócio: HTTP ' + d.status + ' ' + String(d.text).slice(0, 140) };
 
-  lead.ploomesContatoId = contato.Id;
+  if (contato && contato.Id) lead.ploomesContatoId = contato.Id;   // só para medir, não vincula
   lead.ploomesDealId = deal.Id;
   lead.ploomesDonoId = dono.id;
   lead.ploomesEm = new Date().toISOString();
-  return { dealId: deal.Id, contatoId: contato.Id, dono: dono.nome, novo: !contato.Name };
+  return { dealId: deal.Id, contatoId: (contato && contato.Id) || null, dono: dono.nome };
 }
 
 // ---------- funil: o que aconteceu DEPOIS do disparo ----------
@@ -416,12 +413,20 @@ async function statusDoEnvio(msgId) {
  */
 async function sincronizarCrm(teto) {
   if (!PL.key()) return { erro: 'PLOOMES_KEY ausente' };
-  const alvos = leads.filter(l => l.ploomesContatoId)
+  // quem virou negócio entra aqui. Como o negócio nasce SEM contato, o vínculo para medir é
+  // reprocurado pelo telefone a cada rodada: o prospect pode ser cadastrado no CRM depois, e aí
+  // orçamento/venda voltam a aparecer sozinhos.
+  const alvos = leads.filter(l => l.ploomesDealId)
     .sort((a, b) => String(a.crmEm || '').localeCompare(String(b.crmEm || '')))  // o mais defasado primeiro
     .slice(0, teto || 20);
   let mudou = 0;
   for (const l of alvos) {
     try {
+      if (!l.ploomesContatoId) {
+        const c = await plContatoPorFone(l.phoneNorm);
+        if (c && c.Id) l.ploomesContatoId = c.Id;
+        else { l.crmEm = new Date().toISOString(); continue; }   // ainda não é cliente
+      }
       const q = await plReq("Quotes?$filter=ContactId eq " + l.ploomesContatoId +
         "&$select=Id,Amount,Date&$top=50");
       const o = await plReq("Orders?$filter=ContactId eq " + l.ploomesContatoId +
