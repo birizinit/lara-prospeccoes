@@ -3,6 +3,7 @@
  * Segredos vêm do .env; parâmetros do config.json. Ver README.md.
  */
 'use strict';
+const { Avisos } = require('./avisos');
 const http = require('http');
 const https = require('https');
 const fs = require('fs');
@@ -67,12 +68,15 @@ let state = loadJSON(STATE_FILE, { monthKey: '', dayKey: '', monthSent: 0, daySe
 let leads = loadJSON(LEADS_FILE, []);
 // runtime overrides persistem por cima do config.json: o que se ajusta no painel
 // mora aqui (e no volume), para sobreviver a redeploy sem precisar mexer em codigo.
-const RT_CAMPOS = ['paused', 'dryRun', 'dailyCap', 'monthlyCap', 'hourStart', 'hourEnd', 'niche', 'cities'];
+const RT_CAMPOS = ['paused', 'dryRun', 'dailyCap', 'monthlyCap', 'hourStart', 'hourEnd', 'niche', 'cities',
+                   'avisaDisparo', 'avisaCrm'];
 const rt = Object.assign({
   paused: CFG.campaign.paused, dryRun: CFG.campaign.dryRun,
   dailyCap: CFG.campaign.dailyCap, monthlyCap: CFG.campaign.monthlyCap,
   hourStart: CFG.campaign.businessHourStart, hourEnd: CFG.campaign.businessHourEnd,
   niche: CFG.campaign.niche || '', cities: CFG.campaign.cities || [],
+  // avisos no WhatsApp do Diretor — ligados por padrao, calaveis no painel
+  avisaDisparo: true, avisaCrm: true,
 }, state.runtimeCfg || {});
 // 04/09 — ajuste do Diretor: 50 disparos/dia útil, janela 09h–17h, teto mensal p/ a semana inteira
 // (22 dias úteis × 50 ≈ 1100). Aplicado UMA vez neste deploy (grava no runtimeCfg do volume);
@@ -83,7 +87,13 @@ if (state.rtAjuste !== '2026-09-04') {
   for (const k of RT_CAMPOS) state.runtimeCfg[k] = rt[k];
   saveJSON(STATE_FILE, state);
 }
+// Canal de aviso do Diretor. Fica FORA do caminho critico: se falhar, o disparo
+// e a criacao do negocio seguem normais (ver as chamadas, todas com .catch).
+const avisos = new Avisos({ avisaDisparo: rt.avisaDisparo, avisaCrm: rt.avisaCrm });
+function sincAvisos() { avisos.avisaDisparo = rt.avisaDisparo; avisos.avisaCrm = rt.avisaCrm; }
+
 function persist() {
+  sincAvisos();
   state.runtimeCfg = {};
   for (const k of RT_CAMPOS) state.runtimeCfg[k] = rt[k];
   saveJSON(STATE_FILE, state); saveJSON(LEADS_FILE, leads);
@@ -511,7 +521,15 @@ async function sincronizarFunil(teto) {
         try {
           const r = await plCriarNegocio(l);
           if (r.erro) pushLog('error', 'Ploomes ' + l.name + ': ' + r.erro);
-          else if (r.dealId) pushLog('sent', 'CRM · negócio #' + r.dealId + ' para ' + l.name + ' → ' + r.dono);
+          else if (r.dealId) {
+            pushLog('sent', 'CRM · negócio #' + r.dealId + ' para ' + l.name + ' → ' + r.dono);
+            avisos.crm(l, r, {
+              enviados: leads.filter((x) => x.status === 'sent' && !x.dryRun).length,
+              respondidos: leads.filter((x) => x.respondeuEm).length,
+            }).then((a) => { if (!a.ok && a.motivo && a.motivo !== 'aviso de CRM desligado')
+                               pushLog('info', 'aviso Diretor: ' + a.motivo); })
+              .catch((e) => pushLog('info', 'aviso Diretor falhou: ' + e.message));
+          }
         } catch (e) { pushLog('error', 'Ploomes ' + l.name + ': ' + e.message); }
       }
       if (antes !== l.entrega) mudou++;
@@ -672,7 +690,17 @@ async function tick() {
       pushLog('dry', `(DRY) enviaria p/ ${lead.name} — ${lead.phoneNorm}`);
     } else {
       const res = await neppoSend(lead.phoneNorm);
-      if (res.ok) { lead.status = 'sent'; lead.sentAt = new Date().toISOString(); lead.msgId = res.id; pushLog('sent', `WhatsApp -> ${lead.name} (${lead.phoneNorm}) id=${res.id}`); }
+      if (res.ok) {
+        lead.status = 'sent'; lead.sentAt = new Date().toISOString(); lead.msgId = res.id;
+        pushLog('sent', `WhatsApp -> ${lead.name} (${lead.phoneNorm}) id=${res.id}`);
+        // fire-and-forget: aviso que falha nao pode derrubar a campanha
+        avisos.disparo(lead, {
+          daySent: state.daySent + 1, dailyCap: rt.dailyCap,
+          monthSent: state.monthSent + 1, monthlyCap: rt.monthlyCap,
+        }).then((a) => { if (!a.ok && a.motivo && a.motivo !== 'aviso de disparo desligado')
+                           pushLog('info', 'aviso Diretor: ' + a.motivo); })
+          .catch((e) => pushLog('info', 'aviso Diretor falhou: ' + e.message));
+      }
       else { lead.status = 'failed'; lead.error = res.error; pushLog('error', `Falha ${lead.name}: ${res.error}`); persist(); return; }
     }
     state.lastSendAt = Date.now(); state.daySent++; state.monthSent++;
@@ -729,7 +757,9 @@ function snapshot() {
       nextGapMin: Math.round(nextGapMs(t) / 60000), lastSendAt: state.lastSendAt,
       hours: `${rt.hourStart}h–${rt.hourEnd}h ${CFG.campaign.timezone} · seg a sex`,
       config: { dailyCap: rt.dailyCap, monthlyCap: rt.monthlyCap, hourStart: rt.hourStart,
-                hourEnd: rt.hourEnd, niche: rt.niche, cities: rt.cities },
+                hourEnd: rt.hourEnd, niche: rt.niche, cities: rt.cities,
+                avisaDisparo: rt.avisaDisparo, avisaCrm: rt.avisaCrm },
+      avisos: avisos.estado,
     },
     counts: { total: leads.length, queued: byStatus.queued || 0, sent: byStatus.sent || 0, failed: byStatus.failed || 0, skipped: byStatus.skipped || 0 },
     leads: leads.map(l => ({ id: l.id, name: l.name, lat: l.lat, lng: l.lng, status: l.status, category: l.category, phone: l.phoneNorm, reason: l.reason })),
@@ -856,6 +886,8 @@ const server = http.createServer(async (req, res) => {
       // seria entregar o numero da Lar para a Meta marcar como spam.
       if (p.dailyCap !== undefined) rt.dailyCap = num(p.dailyCap, 1, 50, rt.dailyCap);
       if (p.monthlyCap !== undefined) rt.monthlyCap = num(p.monthlyCap, 1, 2000, rt.monthlyCap);
+      if (p.avisaDisparo !== undefined) rt.avisaDisparo = !!p.avisaDisparo;
+      if (p.avisaCrm !== undefined) rt.avisaCrm = !!p.avisaCrm;
       if (p.hourStart !== undefined) rt.hourStart = num(p.hourStart, 0, 23, rt.hourStart);
       if (p.hourEnd !== undefined) rt.hourEnd = num(p.hourEnd, 1, 24, rt.hourEnd);
       if (rt.hourEnd <= rt.hourStart) rt.hourEnd = Math.min(24, rt.hourStart + 1);  // janela precisa existir

@@ -6,3 +6,4 @@ leads.json
 .git
 *.bak*
 _*.json
+_teste*.js
