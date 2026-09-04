@@ -876,6 +876,13 @@ const server = http.createServer(async (req, res) => {
       return send(200, { ok: true, added, skipped, total: leads.length });
     }
     // ajustes da campanha pelo painel (nao precisa mexer no config.json nem redeployar)
+    // prova o canal de aviso sem esperar um disparo real
+    if (u.pathname === '/api/aviso-teste' && req.method === 'POST') {
+      sincAvisos();
+      const r = await avisos.teste().catch((e) => ({ ok: false, motivo: e.message }));
+      pushLog(r.ok ? 'sent' : 'error', 'aviso de teste: ' + (r.ok ? 'enviado' : (r.motivo || 'falhou')));
+      return send(200, r);
+    }
     if (req.method === 'POST' && u.pathname === '/api/config') {
       const p = JSON.parse(await body(req) || '{}');
       const num = (v, min, max, atual) => {

@@ -115,6 +115,31 @@ $('cfgSave').onclick = async () => {
   b.disabled = false; b.textContent = 'Salvar ajustes';
 };
 
+// ---------- avisos no WhatsApp do Diretor ----------
+// Os dois eventos ligam/desligam separados de proposito: um e' por disparo
+// (muitos por dia), o outro so' quando alguem responde (raro e importante).
+async function salvaAviso() {
+  const m = $('avisoMsg');
+  try {
+    await api('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ avisaDisparo: $('avisoDisparo').checked, avisaCrm: $('avisoCrm').checked }) });
+    m.textContent = 'Salvo.'; m.className = 'msg ok';
+    refresh();
+  } catch (e) { m.textContent = e.message || 'nao consegui salvar'; m.className = 'msg err'; }
+}
+$('avisoDisparo').onchange = salvaAviso;
+$('avisoCrm').onchange = salvaAviso;
+$('avisoTeste').onclick = async () => {
+  const b = $('avisoTeste'), m = $('avisoMsg');
+  b.disabled = true; b.textContent = 'Enviando…';
+  try {
+    const r = await api('/api/aviso-teste', { method: 'POST' });
+    m.textContent = r.ok ? 'Enviado — confira o WhatsApp.' : ('Nao saiu: ' + (r.motivo || 'erro'));
+    m.className = 'msg ' + (r.ok ? 'ok' : 'err');
+  } catch (e) { m.textContent = e.message || 'falhou'; m.className = 'msg err'; }
+  b.disabled = false; b.textContent = 'Enviar mensagem de teste';
+};
+
 // ---------- render/estado ----------
 const COLOR = { queued: '#f2b34b', sent: '#28d192', failed: '#ef6b6b', skipped: '#4a5a54' };
 async function refresh() {
@@ -133,6 +158,18 @@ async function refresh() {
   const põe = (id, v) => { const el = $(id); if (el && document.activeElement !== el && v != null) el.value = v; };
   põe('cfgDaily', cfg.dailyCap); põe('cfgMonthly', cfg.monthlyCap);
   põe('cfgH1', cfg.hourStart); põe('cfgH2', cfg.hourEnd); põe('cfgNiche', cfg.niche);
+  // estado do canal de avisos
+  const av = c.avisos || {};
+  const ad = $('avisoDisparo'), ac = $('avisoCrm'), ae = $('avisoEstado');
+  if (ad && document.activeElement !== ad) ad.checked = !!cfg.avisaDisparo;
+  if (ac && document.activeElement !== ac) ac.checked = !!cfg.avisaCrm;
+  if (ae) {
+    ae.textContent = av.ligado
+      ? ('canal ligado · ' + av.destinos + ' numero(s) · instancia "' + av.instancia + '"')
+      : ('canal DESLIGADO — ' + (av.motivo || 'configuracao incompleta'));
+    ae.style.color = av.ligado ? '' : '#ef6b6b';
+  }
+
   const h = $('cfgHint');
   if (h) {
     const uteis = 21, teto = (cfg.dailyCap || 0) * uteis;
