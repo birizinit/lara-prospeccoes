@@ -16,11 +16,11 @@
     "headerImage": "https://cosmic-malasada-6032cd.netlify.app/prospec.jpg"
   },
   "campaign": {
-    "monthlyCap": 1000,
+    "monthlyCap": 1100,
     "businessDaysPerMonth": 20,
     "dailyCap": 50,
-    "businessHourStart": 8,
-    "businessHourEnd": 19,
+    "businessHourStart": 9,
+    "businessHourEnd": 17,
     "timezone": "America/Sao_Paulo",
     "jitterPct": 0.35,
     "onlyMobileWhatsapp": true,

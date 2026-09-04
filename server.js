@@ -74,6 +74,15 @@ const rt = Object.assign({
   hourStart: CFG.campaign.businessHourStart, hourEnd: CFG.campaign.businessHourEnd,
   niche: CFG.campaign.niche || '', cities: CFG.campaign.cities || [],
 }, state.runtimeCfg || {});
+// 04/09 — ajuste do Diretor: 50 disparos/dia útil, janela 09h–17h, teto mensal p/ a semana inteira
+// (22 dias úteis × 50 ≈ 1100). Aplicado UMA vez neste deploy (grava no runtimeCfg do volume);
+// depois o painel volta a mandar (dryRun/paused/nicho/cidades ficam como estão).
+if (state.rtAjuste !== '2026-09-04') {
+  rt.hourStart = 9; rt.hourEnd = 17; rt.dailyCap = 50; rt.monthlyCap = 1100;
+  state.rtAjuste = '2026-09-04';
+  for (const k of RT_CAMPOS) state.runtimeCfg[k] = rt[k];
+  saveJSON(STATE_FILE, state);
+}
 function persist() {
   state.runtimeCfg = {};
   for (const k of RT_CAMPOS) state.runtimeCfg[k] = rt[k];
