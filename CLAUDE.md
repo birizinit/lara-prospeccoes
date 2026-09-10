@@ -26,6 +26,7 @@ calor** que acende a cada envio. Diferente dos outros apps do workspace, **não 
 | `.env` | **Segredos** (`APIFY_TOKEN`, `NEPPO_*`) — local, gitignored. Ver `../CLAUDE.md §4` |
 | `public/index.html` · `app.js` · `styles.css` | Front-end (mapa, busca de cidade, chips, painel, heatmap) |
 | `state.json` · `leads.json` | Runtime (contadores + fila). Gerados ao rodar; gitignored |
+| `cidades-br.json` | **Rodízio nacional** do auto-refill: 152 cidades (27 UFs) em ordem de porte. Cidade a cidade porque o Google Maps limita o resultado por busca |
 | `README.md` | Guia de uso rápido |
 
 ## Fluxo de dados
@@ -61,6 +62,7 @@ calor** que acende a cada envio. Diferente dos outros apps do workspace, **não 
 | `campaign.businessHourStart`(8) / `businessHourEnd`(18) / `timezone`("America/Sao_Paulo") | Janela |
 | `campaign.jitterPct`(0.35) | Variação no espaçamento |
 | `campaign.onlyMobileWhatsapp`(true) | Pular fixos |
+| `campaign.autoRefill`(true) / `refillMin`(90) / `maxRunsDia`(8) | **Auto-refill**: busca sozinha quando a fila com WhatsApp cai abaixo do piso; teto de buscas/dia protege o crédito Apify |
 | `campaign.dryRun`(true) / `paused`(false) | **Travas de segurança** (persistem em state.json) |
 
 ## Cadência / drip (lógica no server.js)
@@ -90,6 +92,13 @@ no Windows) senão dá `EADDRINUSE` na porta 3100 e a instância antiga continua
 - **EADDRINUSE:** sempre encerre o node antigo antes de subir de novo.
 - **TLS Neppo:** validação estrita pode falhar → `NEPPO_STRICT_TLS=0` (como o `curl -k` oficial).
 - **`groupConfId`:** assumido = id do grupo (35). Confirmar no 1º envio real.
+- **O `.env` vence env var vazia:** o carregador faz `if (!process.env[K])` — string vazia é falsy, então
+  `APIFY_TOKEN=""` **não isola** um teste local (o `.env` sobrescreve). Isolar = valor de mentira, ou
+  `DATA_DIR` próprio (que funciona bem: o estado de produção fica intocado).
+- **`*.bak*` no `.dockerignore` não atravessa pasta** (o `*` do Docker não casa `/`) → um backup dentro de
+  `public/` viajaria e ficaria **servido por URL**. Use `**/*.bak*`.
+- **Busca do Apify que falha queima uma das buscas do dia** — de propósito: falha persistente para em ~32 min
+  em vez de girar em laço gastando crédito.
 - **Compliance:** disparo cold de WhatsApp é sensível à política Meta; o drip lento + template
   aprovado mitigam, mas **volume baixo e gradual** é a regra.
 
