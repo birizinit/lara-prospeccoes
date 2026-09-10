@@ -239,6 +239,7 @@ async function neppoAuth() {
  * mesma conta INVALIDA o nosso — e o cache só expira pelo relógio, então sem isto a Lara
  * ficaria uma hora sem disparar, em silêncio. No 401, descarta o cache e tenta UMA vez.
  */
+const neppo401 = { total: 0, janela: 0, desde: Date.now() };
 async function neppoPost(url, body) {
   let tok = await neppoAuth();
   const bater = () => request(url, { method: 'POST',
@@ -246,7 +247,18 @@ async function neppoPost(url, body) {
     body, rejectUnauthorized: NEPPO_TLS });
   let r = await bater();
   if (r.status === 401) {                       // desiste no 2o 401: laço aqui é pior que a falha
-    pushLog('info', 'Neppo 401 — token invalidado por outro consumidor; renovando');
+    // A Neppo emite UM token por credencial e varios apps usam a mesma: quem renova mata o
+    // token dos outros. O retry resolve, entao renovar e o funcionamento normal — nao e
+    // incidente. Logar cada uma enchia o registro e escondia problema de verdade; agora
+    // conta e so reporta em bloco (e se o ritmo ficar anormal, isso aparece no numero).
+    neppo401.total++; neppo401.janela++;
+    if (Date.now() - neppo401.desde > 36e5) {   // fecha a janela de 1h
+      if (neppo401.janela > 1) pushLog('info',
+        'Neppo: token renovado ' + neppo401.janela + 'x na ultima hora (credencial compartilhada com outros apps)');
+      neppo401.janela = 0; neppo401.desde = Date.now();
+    } else if (neppo401.total === 1) {
+      pushLog('info', 'Neppo: token e compartilhado com outros apps — renovando quando outro consumidor invalida');
+    }
     neppoTok = { token: null, exp: 0 };
     tok = await neppoAuth();
     r = await bater();
@@ -454,6 +466,11 @@ async function backfillDeals(teto) {
 // ⚠️ RESPOSTA = `sessionId` preenchido no PRÓPRIO envio (a sessão nasce quando o prospect
 // responde). O caminho oposto não serve: `directMessageId` na sessão veio nulo em 572 sessões.
 const FINAIS = new Set(['LIDA', 'ERRO']);            // o resto ainda pode evoluir
+// ...mas so por um tempo: quem CHEGOU e nao foi lido em alguns dias nao vai mais ser.
+// Sem este corte, cada envio nesse estado era re-consultado a cada 5 min PARA SEMPRE —
+// inclusive de madrugada e fim de semana — mantendo a briga de token com os outros
+// consumidores da mesma credencial Neppo viva 24/7 (o 401 a cada 5 min no registro).
+const SYNC_DIAS = Number(process.env.LARA_SYNC_DIAS || 3);
 
 async function statusDoEnvio(msgId) {
   const r = await neppoPost('https://api.neppo.com.br/chatapi/1.0/api/direct-message',
@@ -502,7 +519,9 @@ async function sincronizarCrm(teto) {
 
 /** Atualiza o funil dos disparos que ainda podem mudar. Teto por rodada: a API é lenta. */
 async function sincronizarFunil(teto) {
-  const alvos = leads.filter(l => l.msgId && !l.dryRun && !FINAIS.has(l.entrega || ''))
+  const corte = Date.now() - SYNC_DIAS * 864e5;
+  const alvos = leads.filter(l => l.msgId && !l.dryRun && !FINAIS.has(l.entrega || '')
+                                  && (!l.sentAt || Date.parse(l.sentAt) >= corte))
     .sort((a, b) => String(b.sentAt || '').localeCompare(String(a.sentAt || '')))   // recentes primeiro
     .slice(0, teto || 40);
   let mudou = 0;
@@ -754,6 +773,7 @@ function snapshot() {
       monthSent: state.monthSent, monthlyCap: rt.monthlyCap,
       daySent: state.daySent, dailyCap: rt.dailyCap,
       businessNow: isBusinessNow(t), paused: rt.paused, dryRun: rt.dryRun,
+      neppoRenovacoes: neppo401.total,
       nextGapMin: Math.round(nextGapMs(t) / 60000), lastSendAt: state.lastSendAt,
       hours: `${rt.hourStart}h–${rt.hourEnd}h ${CFG.campaign.timezone} · seg a sex`,
       config: { dailyCap: rt.dailyCap, monthlyCap: rt.monthlyCap, hourStart: rt.hourStart,

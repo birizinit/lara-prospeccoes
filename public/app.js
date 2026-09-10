@@ -1,3 +1,11 @@
+// o carimbo do log e ISO em UTC; sem converter, o painel mostrava 3h a frente e
+// dava a impressao de estar no meio da janela de disparo quando ainda nem tinha comecado.
+function horaSP(iso) {
+  try {
+    return new Date(iso).toLocaleTimeString('pt-BR',
+      { timeZone: 'America/Sao_Paulo', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  } catch (_) { return String(iso).slice(11, 19); }
+}
 /* Lara - Prospecções — front-end */
 'use strict';
 const $ = (id) => document.getElementById(id);
@@ -196,7 +204,7 @@ async function refresh() {
 
   // log
   $('log').innerHTML = s.log.slice().reverse().map(e =>
-    `<div class="l-${e.level}"><time>${e.t.slice(11, 19)}</time>${escapeHtml(e.msg)}</div>`).join('');
+    `<div class="l-${e.level}"><time>${horaSP(e.t)}</time>${escapeHtml(e.msg)}</div>`).join('');
 }
 function escapeHtml(s) { return String(s).replace(/[&<>]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[m])); }
 
