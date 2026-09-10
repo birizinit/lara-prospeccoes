@@ -65,11 +65,12 @@ function loadJSON(f, def) {
 }
 
 let state = loadJSON(STATE_FILE, { monthKey: '', dayKey: '', monthSent: 0, daySent: 0, lastSendAt: 0, runtimeCfg: {} });
+state.refill = Object.assign({ dayKey: '', runs: 0, idx: 0, ultima: '', ultimaEm: 0 }, state.refill || {});
 let leads = loadJSON(LEADS_FILE, []);
 // runtime overrides persistem por cima do config.json: o que se ajusta no painel
 // mora aqui (e no volume), para sobreviver a redeploy sem precisar mexer em codigo.
 const RT_CAMPOS = ['paused', 'dryRun', 'dailyCap', 'monthlyCap', 'hourStart', 'hourEnd', 'niche', 'cities',
-                   'avisaDisparo', 'avisaCrm'];
+                   'avisaDisparo', 'avisaCrm', 'autoRefill', 'refillMin', 'maxRunsDia'];
 const rt = Object.assign({
   paused: CFG.campaign.paused, dryRun: CFG.campaign.dryRun,
   dailyCap: CFG.campaign.dailyCap, monthlyCap: CFG.campaign.monthlyCap,
@@ -77,6 +78,10 @@ const rt = Object.assign({
   niche: CFG.campaign.niche || '', cities: CFG.campaign.cities || [],
   // avisos no WhatsApp do Diretor — ligados por padrao, calaveis no painel
   avisaDisparo: true, avisaCrm: true,
+  // auto-refill: a fila se enche sozinha varrendo o Brasil, para a campanha nao parar
+  // quando os leads de uma cidade acabam. refillMin = piso da fila COM WhatsApp;
+  // maxRunsDia = teto de buscas no Apify por dia (protege o credito).
+  autoRefill: true, refillMin: 90, maxRunsDia: 8,
 }, state.runtimeCfg || {});
 // 04/09 — ajuste do Diretor: 50 disparos/dia útil, janela 09h–17h, teto mensal p/ a semana inteira
 // (22 dias úteis × 50 ≈ 1100). Aplicado UMA vez neste deploy (grava no runtimeCfg do volume);
@@ -84,6 +89,17 @@ const rt = Object.assign({
 if (state.rtAjuste !== '2026-09-04') {
   rt.hourStart = 9; rt.hourEnd = 17; rt.dailyCap = 50; rt.monthlyCap = 1100;
   state.rtAjuste = '2026-09-04';
+  for (const k of RT_CAMPOS) state.runtimeCfg[k] = rt[k];
+  saveJSON(STATE_FILE, state);
+}
+// 10/09 — pedido do Diretor: 50 mensagens/dia a semana inteira sem ligar todo dia,
+// Brasil todo, nicho "utilidades domesticas". O auto-refill e o que tira a mao do processo.
+if (state.rtAjuste2 !== '2026-09-10') {
+  rt.niche = 'utilidades domesticas';
+  rt.dailyCap = 50; rt.monthlyCap = 1100;
+  rt.autoRefill = true; rt.refillMin = 90; rt.maxRunsDia = 8;
+  rt.cities = [];                       // o rodizio nacional substitui a lista manual
+  state.rtAjuste2 = '2026-09-10';
   for (const k of RT_CAMPOS) state.runtimeCfg[k] = rt[k];
   saveJSON(STATE_FILE, state);
 }
@@ -691,6 +707,62 @@ function nextGapMs(t) {
   return gap * j;
 }
 
+async function prospectar(niche, locs, cap) {
+  pushLog('info', `Apify: "${niche}" em ${locs.length} cidade(s), cap ${cap}/cidade…`);
+  const runs = await Promise.all(locs.map(l =>
+    apifyStart(apifyInput(niche, l, cap)).then(r => ({ ...r, loc: l })).catch(e => ({ error: e.message, loc: l }))));
+  const results = await Promise.all(runs.map(async run => {
+    if (run.error) { pushLog('error', `Apify ${(run.loc.city && run.loc.city.display) || ''}: ${run.error}`); return { items: [], loc: run.loc }; }
+    const items = await apifyWait(run).catch(e => { pushLog('error', 'Apify wait: ' + e.message); return []; });
+    return { items, loc: run.loc };
+  }));
+  let added = 0, skipped = 0;
+  for (const r of results) {
+    const a = addLeads(r.items, niche, r.loc.city ? (r.loc.city.display || r.loc.city.name) : (r.loc.locationQuery || ''));
+    added += a.added; skipped += a.skipped;
+  }
+  pushLog('info', `Apify: +${added} leads (${skipped} repetidos) de ${locs.length} cidade(s).`);
+  return { added, skipped };
+}
+
+// ---------- auto-refill: a fila se alimenta sozinha ----------
+// Sem isto a fila esvazia e a campanha para em silêncio até alguém prospectar à mão —
+// era o que acontecia (01/09: "naFila: 0"). O rodízio varre o Brasil cidade a cidade
+// porque o Google Maps limita o resultado por busca: "Brasil" numa consulta só rende pouco.
+const CIDADES_BR = (loadJSON(path.join(__dirname, 'cidades-br.json'), {}).cidades) || [];
+function disparaveis() {
+  return leads.filter(l => l.status === 'queued' && l.phoneNorm
+    && (!CFG.campaign.onlyMobileWhatsapp || l.isMobile)).length;
+}
+let refillRodando = false;
+async function autoRefill() {
+  if (!rt.autoRefill || rt.paused || refillRodando) return;
+  if (!CIDADES_BR.length) return;
+  if (!process.env.APIFY_TOKEN) return;
+  const t = spParts();
+  rollovers(t);
+  const r = state.refill;
+  if (r.dayKey !== t.dayKey) { r.dayKey = t.dayKey; r.runs = 0; }
+  if (r.runs >= rt.maxRunsDia) return;                       // teto de crédito Apify por dia
+  if (Date.now() - (r.ultimaEm || 0) < 4 * 60 * 1000) return; // respiro entre buscas
+  if (state.monthSent >= rt.monthlyCap) return;               // mês fechado: não gasta busca
+  const fila = disparaveis();
+  if (fila >= rt.refillMin) return;                           // já tem folga
+  const cidade = CIDADES_BR[r.idx % CIDADES_BR.length];
+  r.idx = (r.idx + 1) % CIDADES_BR.length;
+  r.runs++; r.ultimaEm = Date.now(); r.ultima = cidade;
+  persist();
+  refillRodando = true;
+  try {
+    pushLog('info', `Fila em ${fila} (mínimo ${rt.refillMin}) — buscando em ${cidade} [${r.runs}/${rt.maxRunsDia} hoje]`);
+    const res = await prospectar(rt.niche, [{ locationQuery: cidade }], CFG.apify.maxResultsPerRun);
+    const agora = disparaveis();
+    pushLog('info', `Fila: ${fila} → ${agora} com WhatsApp (+${res.added} leads brutos de ${cidade})`);
+  } catch (e) {
+    pushLog('error', 'auto-refill: ' + e.message);
+  } finally { refillRodando = false; persist(); }
+}
+
 // ---------- agendador (drip) ----------
 function queued() { return leads.filter(l => l.status === 'queued'); }
 async function tick() {
@@ -727,6 +799,9 @@ async function tick() {
   } catch (e) { pushLog('error', 'tick: ' + e.message); }
 }
 setInterval(tick, 20000);
+// 1 cidade por ciclo (nao despeja buscas de uma vez); o teto diario e o piso da fila mandam
+setInterval(() => autoRefill().catch(() => {}), 5 * 60 * 1000);
+setTimeout(() => autoRefill().catch(() => {}), 45000);   // uma passada logo apos o boot
 // o funil se move DEPOIS do disparo (entregue/lido/respondido): sem isto o painel do
 // Diretor só mostraria 'enviada' e pareceria que ninguém lê.
 setInterval(() => sincronizarFunil(25).catch(() => {}), 5 * 60 * 1000);
@@ -776,8 +851,13 @@ function snapshot() {
       neppoRenovacoes: neppo401.total,
       nextGapMin: Math.round(nextGapMs(t) / 60000), lastSendAt: state.lastSendAt,
       hours: `${rt.hourStart}h–${rt.hourEnd}h ${CFG.campaign.timezone} · seg a sex`,
+      filaComWhats: disparaveis(),
+      refill: { ligado: !!rt.autoRefill, minimo: rt.refillMin, runsHoje: (state.refill || {}).runs || 0,
+                maxRunsDia: rt.maxRunsDia, ultima: (state.refill || {}).ultima || '',
+                cidades: CIDADES_BR.length, posicao: (state.refill || {}).idx || 0 },
       config: { dailyCap: rt.dailyCap, monthlyCap: rt.monthlyCap, hourStart: rt.hourStart,
                 hourEnd: rt.hourEnd, niche: rt.niche, cities: rt.cities,
+                autoRefill: rt.autoRefill, refillMin: rt.refillMin, maxRunsDia: rt.maxRunsDia,
                 avisaDisparo: rt.avisaDisparo, avisaCrm: rt.avisaCrm },
       avisos: avisos.estado,
     },
@@ -882,18 +962,8 @@ const server = http.createServer(async (req, res) => {
       if (Array.isArray(p.cities) && p.cities.length) locs = p.cities.map(c => ({ locationQuery: c.display || c.name, city: c }));
       else if (typeof p.lat === 'number') locs = [{ lat: p.lat, lng: p.lng, radiusKm: p.radiusKm || 5 }];
       else return send(400, { error: 'selecione ao menos uma cidade' });
-      pushLog('info', `Apify: "${p.niche}" em ${locs.length} cidade(s), cap ${cap}/cidade…`);
-      const runs = await Promise.all(locs.map(l =>
-        apifyStart(apifyInput(p.niche, l, cap)).then(r => ({ ...r, loc: l })).catch(e => ({ error: e.message, loc: l }))));
-      const results = await Promise.all(runs.map(async run => {
-        if (run.error) { pushLog('error', `Apify ${(run.loc.city && run.loc.city.display) || ''}: ${run.error}`); return { items: [], loc: run.loc }; }
-        const items = await apifyWait(run).catch(e => { pushLog('error', 'Apify wait: ' + e.message); return []; });
-        return { items, loc: run.loc };
-      }));
-      let added = 0, skipped = 0;
-      for (const r of results) { const a = addLeads(r.items, p.niche, r.loc.city ? (r.loc.city.display || r.loc.city.name) : ''); added += a.added; skipped += a.skipped; }
-      pushLog('info', `Apify: +${added} leads (${skipped} repetidos) de ${locs.length} cidade(s).`);
-      return send(200, { ok: true, added, skipped, total: leads.length });
+      const r = await prospectar(p.niche, locs, cap);
+      return send(200, { ok: true, added: r.added, skipped: r.skipped, total: leads.length });
     }
     // ajustes da campanha pelo painel (nao precisa mexer no config.json nem redeployar)
     // prova o canal de aviso sem esperar um disparo real
@@ -924,7 +994,13 @@ const server = http.createServer(async (req, res) => {
           .map((c) => ({ name: String(c.name || '').slice(0, 80), display: String(c.display || c.name || '').slice(0, 120) }))
           .filter((c) => c.display);
       }
+      if (p.autoRefill !== undefined) rt.autoRefill = !!p.autoRefill;
+      // piso da fila: alto demais queima crédito Apify à toa, baixo demais deixa a campanha
+      // secar antes da próxima busca. maxRunsDia é o teto de crédito por dia.
+      if (p.refillMin !== undefined) rt.refillMin = num(p.refillMin, 10, 400, rt.refillMin);
+      if (p.maxRunsDia !== undefined) rt.maxRunsDia = num(p.maxRunsDia, 0, 20, rt.maxRunsDia);
       pushLog('info', `config: ${rt.dailyCap}/dia · ${rt.monthlyCap}/mes · ${rt.hourStart}h–${rt.hourEnd}h`
+        + ` · busca automática ${rt.autoRefill ? 'ligada (fila mín. ' + rt.refillMin + ', até ' + rt.maxRunsDia + ' buscas/dia)' : 'desligada'}`
         + (rt.niche ? ` · nicho "${rt.niche}"` : '') + (rt.cities.length ? ` · ${rt.cities.length} cidade(s)` : ''));
       persist();
       return send(200, { ok: true, config: snapshot().campaign.config });

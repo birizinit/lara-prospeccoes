@@ -57,9 +57,21 @@
       <label>Nicho padrão (já vem preenchido lá em cima)
         <input id="cfgNiche" type="text" placeholder="ex.: revenda de plásticos" />
       </label>
+      <div class="switches">
+        <label class="sw"><input type="checkbox" id="cfgAuto"><span>Buscar empresas <b>sozinha</b> quando a fila baixar (Brasil todo, cidade a cidade)</span></label>
+      </div>
+      <div class="row2">
+        <label>Buscar quando a fila cair abaixo de
+          <input id="cfgRefillMin" type="number" min="10" max="400" value="90" />
+        </label>
+        <label>Máximo de buscas por dia
+          <input id="cfgMaxRuns" type="number" min="0" max="20" value="8" />
+        </label>
+      </div>
       <button id="cfgSave" class="btn primary">Salvar ajustes</button>
       <div id="cfgMsg" class="msg"></div>
       <p class="hint" id="cfgHint">Só dias úteis, de segunda a sexta.</p>
+      <p class="hint" id="refillEstado"></p>
     </section>
 
     <section class="card">

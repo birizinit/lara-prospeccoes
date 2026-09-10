@@ -109,11 +109,14 @@ $('cfgSave').onclick = async () => {
         dailyCap: +$('cfgDaily').value, monthlyCap: +$('cfgMonthly').value,
         hourStart: +$('cfgH1').value, hourEnd: +$('cfgH2').value,
         niche: $('cfgNiche').value,
+        autoRefill: $('cfgAuto').checked,
+        refillMin: +$('cfgRefillMin').value, maxRunsDia: +$('cfgMaxRuns').value,
       }) });
     const c = r.config || {};
     // mostro o que o servidor GRAVOU, não o que eu digitei: se o teto de 50/dia cortou,
     // o número muda na tela e a pessoa vê o porquê.
-    m.textContent = 'Salvo: ' + c.dailyCap + '/dia · ' + c.monthlyCap + '/mês · ' + c.hourStart + 'h às ' + c.hourEnd + 'h';
+    m.textContent = 'Salvo: ' + c.dailyCap + '/dia · ' + c.monthlyCap + '/mês · ' + c.hourStart + 'h às ' + c.hourEnd + 'h'
+      + ' · busca automática ' + (c.autoRefill ? 'ligada' : 'desligada');
     m.className = 'msg ok';
     if (c.niche) { $('niche').value = c.niche; updateProspectBtn(); }
     refresh();
@@ -166,6 +169,20 @@ async function refresh() {
   const põe = (id, v) => { const el = $(id); if (el && document.activeElement !== el && v != null) el.value = v; };
   põe('cfgDaily', cfg.dailyCap); põe('cfgMonthly', cfg.monthlyCap);
   põe('cfgH1', cfg.hourStart); põe('cfgH2', cfg.hourEnd); põe('cfgNiche', cfg.niche);
+  põe('cfgRefillMin', cfg.refillMin); põe('cfgMaxRuns', cfg.maxRunsDia);
+  const ar = $('cfgAuto');
+  if (ar && document.activeElement !== ar) ar.checked = !!cfg.autoRefill;
+  // o estado da busca automatica precisa ser visivel: senao nao da para saber se ela
+  // esta trabalhando ou se a campanha vai secar em silencio (foi o que aconteceu em 01/09).
+  const re = $('refillEstado'), rf = c.refill || {};
+  if (re) {
+    re.textContent = !rf.ligado
+      ? 'Busca automática desligada — a fila só enche quando você prospectar aqui em cima.'
+      : ((c.filaComWhats || 0) + ' na fila com WhatsApp (mínimo ' + rf.minimo + ') · '
+         + (rf.runsHoje || 0) + ' de ' + rf.maxRunsDia + ' buscas hoje · '
+         + 'cidade ' + ((rf.posicao || 0) + 1) + ' de ' + rf.cidades
+         + (rf.ultima ? ' · última: ' + rf.ultima : ''));
+  }
   // estado do canal de avisos
   const av = c.avisos || {};
   const ad = $('avisoDisparo'), ac = $('avisoCrm'), ae = $('avisoEstado');
