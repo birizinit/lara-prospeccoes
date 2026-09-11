@@ -1031,4 +1031,11 @@ const server = http.createServer(async (req, res) => {
     send(404, { error: 'not found' });
   } catch (e) { pushLog('error', req.url + ': ' + e.message); send(500, { error: e.message }); }
 });
-server.listen(PORT, () => pushLog('info', `Lara - Prospecções on http://localhost:${PORT}  (dryRun=${rt.dryRun}, paused=${rt.paused})`));
+server.listen(PORT, () => {
+  pushLog('info', `Lara - Prospecções on http://localhost:${PORT}  (dryRun=${rt.dryRun}, paused=${rt.paused})`);
+  // ⚠️ sem isto o aviso so era visivel no painel: se o AVISO_NUMEROS for sobrescrito
+  // com menos destinos, alguem simplesmente para de receber e ninguem percebe.
+  const a = avisos.estado;
+  pushLog('info', `avisos WhatsApp: ${a.ligado ? `ligado · ${a.destinos} destino(s)` : `DESLIGADO (${a.motivo})`}`
+    + ` · disparo=${a.avisaDisparo} · crm=${a.avisaCrm}`);
+});
