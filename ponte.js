@@ -15,6 +15,7 @@
  *   GET  /historico?texto=    → disparos da Neppo cujo texto contém `texto` (quem já recebeu), só leitura
  *   POST /sessoes-janela      → { desde, ate (epoch ms), pagina, contar?, debug? } → protocolos criados na janela, 50 por
  *                               página, com telefone, atendente e grupo (Aeroporto de Leads do cockpit), só leitura
+ *   POST /conversa            → { sessionId } → a conversa inteira do protocolo (cliente, atendente, bot), só leitura
  *
  * ⚠️ A Neppo emite UM token por credencial: outro consumidor que peça token invalida o nosso.
  * No 401 descarta o cache e tenta UMA vez (lição de 01/09 — a Lara ficava 1 h muda).
@@ -213,6 +214,36 @@ async function historico(texto, maxPaginas) {
     descricao: m.description || null, sessionId: m.sessionId || null, enviadoEm: m.sentAt || m.createdAt || null, grupo: m.groupName || null })) };
 }
 
+/** A conversa INTEIRA de um protocolo (cliente, atendente, bot e sistema), em ordem. Só leitura.
+ *  É o "abrir a conversa" do Aeroporto de Leads: prova do que foi (ou não foi) respondido.
+ *  Até 8 páginas de 50 (400 mensagens); mídia volta com o link https da Neppo. */
+async function conversa(sessionId) {
+  if (!/^\d+$/.test(String(sessionId))) throw new Error('sessionId inválido');
+  const out = [];
+  let truncada = false;
+  for (let pg = 0; pg < 8; pg++) {
+    const r = await neppo('/chatapi/1.0/api/v2/messages', { conditions: [{ key: 'session.id', value: String(sessionId), operator: 'EQNUM', logic: 'AND' }],
+      sort: true, sortColumn: 'createdAt', direction: 'ASC', page: pg, size: 50 });
+    if (r.status >= 300) throw new Error(`conversa: HTTP ${r.status}`);
+    const parte = (r.json && r.json.results) || [];
+    out.push(...parte);
+    if (parte.length < 50) break;
+    if (pg === 7) truncada = true;
+  }
+  const quem = (m) => {
+    if (m.sendBy === 'user') return 'cliente';
+    if (m.sendBy === 'bot' || /@botserver/i.test(String(m.fromUser || ''))) return 'bot';
+    if (m.sendBy === 'system') return 'sistema';
+    const a = m.agent && typeof m.agent === 'object' ? (m.agent.displayName || m.agent.name) : null;
+    return a || String(m.fromUser || 'atendente');
+  };
+  return { truncada, itens: out.map((m) => {
+    const midia = m.contentType && m.contentType !== 'TEXT' && typeof m.message === 'string' && /^https:\/\//.test(m.message) ? m.message : null;
+    return { em: m.createdAt || null, de: m.sendBy || null, quem: quem(m), tipo: m.contentType || 'TEXT',
+      texto: midia ? (m.caption || '') : textoMsg(m), midia };
+  }) };
+}
+
 /** Sessões (protocolos) CRIADAS numa janela — para o Aeroporto de Leads cruzar telefone × Ploomes. Só leitura.
  *  Uma página por chamada (a Neppo corta em 50); quem chama pagina. `contar` devolve só o total.
  *  ⚠️ AFTER/BEFORE só filtram com EPOCH EM MS — e, se a Neppo ignorar o filtro, ela devolve a base inteira
@@ -297,6 +328,7 @@ const srv = http.createServer(async (req, res) => {
     if (req.method === 'POST' && u.pathname === '/mensagens') return enviarJson(200, { itens: await mensagens((await corpoJson(req)).sessionId) });
     if (req.method === 'POST' && u.pathname === '/sessoes') return enviarJson(200, { itens: await sessoes((await corpoJson(req)).ids) });
     if (req.method === 'POST' && u.pathname === '/sessoes-janela') return enviarJson(200, await sessoesJanela(await corpoJson(req)));
+    if (req.method === 'POST' && u.pathname === '/conversa') return enviarJson(200, await conversa((await corpoJson(req)).sessionId));
     let mt;
     if (req.method === 'GET' && (mt = u.pathname.match(/^\/templates\/(\d+)$/))) return enviarJson(200, await templateBruto(mt[1]));
     if (req.method === 'GET' && u.pathname === '/legado') return enviarJson(200, legado());

@@ -112,6 +112,14 @@ const fake = http.createServer((req, res) => {
     ok(msg.j.itens[2].texto === 'Não tenho interesse' && msg.j.itens[3].texto === 'Quero conhecer',
       'clique em botão de resposta rápida chega com o TEXTO do botão (senão quem recusou viraria negócio)', msg.j.itens.slice(2));
     ok((await req('POST', '/mensagens', { sessionId: '1 OR 1' })).s === 502, 'sessionId inválido é recusado');
+    const cv = await req('POST', '/conversa', { sessionId: 555 });
+    const ci = cv.j.itens || [];
+    ok(cv.s === 200 && ci.length === 5 && cv.j.truncada === false, 'conversa: devolve TODAS as mensagens do protocolo (não só as do cliente)', cv.j);
+    ok(ci[0].quem === 'sistema' && ci[1].quem === 'cliente' && ci[1].texto === 'pode me tirar da lista', 'conversa: diz quem falou (sistema, cliente)', ci.slice(0, 2));
+    ok(ci[2].tipo === 'IMAGE' && ci[2].midia === 'https://x/a.jpg' && ci[3].texto === 'Não tenho interesse' && ci[4].texto === 'Quero conhecer',
+      'conversa: imagem vem com o link; clique em botão vem com o texto', ci.slice(2));
+    ok((await req('POST', '/conversa', { sessionId: '1; drop' })).s === 502, 'conversa: id inválido é recusado');
+    ok((await req('POST', '/conversa', { sessionId: 555 }, false)).s === 401, 'conversa: sem a chave, 401');
     const lg = await req('GET', '/legado');
     ok(lg.j.leads.length === 1 && lg.j.leads[0].msgId === 777 && lg.j.estado.monthSent === 120, 'legado: devolve a fila e o estado da Lara antiga (só leitura)', lg.j);
     const se = await req('POST', '/sessoes', { ids: [555, 556, 'x', 557] });
