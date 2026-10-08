@@ -9,6 +9,8 @@
  *   POST /enviar              → { telefone, templateId, imagem?, grupoNome?, grupoConfId? } → { ok, id } | { ok:false, erro }
  *   POST /status              → { ids: [..] } → [{ id, status, descricao, sessionId, enviadoEm, atualizadoEm }]
  *   POST /mensagens           → { sessionId } → [{ em, de, texto }]  (o que o PROSPECT escreveu)
+ *   POST /sessoes             → { ids: [..] } → [{ id, protocolo, status, atendente, atendidoEm, encerradoEm }]
+ *   GET  /templates/:id       → o template cru da Neppo (ver cabeçalho de mídia)
  *   GET  /legado              → a fila/histórico da Lara antiga (volume /data), só leitura
  *   GET  /historico?texto=    → disparos da Neppo cujo texto contém `texto` (quem já recebeu), só leitura
  *
@@ -147,6 +149,31 @@ async function mensagens(sessionId) {
     .map((m) => ({ em: m.createdAt || null, tipo: m.contentType || 'TEXT', texto: m.contentType && m.contentType !== 'TEXT' ? `[${m.contentType}]` : String(m.message || '') }));
 }
 
+/** Sessões (o atendimento que nasce quando o prospect RESPONDE): protocolo e quem assumiu. Só leitura.
+ *  ⚠️ `IN` com vários valores falha em silêncio na Neppo → uma consulta por id (teto 60). */
+async function sessoes(ids) {
+  const out = [];
+  for (const id of (Array.isArray(ids) ? ids : []).slice(0, 60)) {
+    if (!/^\d+$/.test(String(id))) continue;
+    const r = await neppo('/chatapi/1.0/api/v2/user-session', { conditions: [{ key: 'id', value: String(id), operator: 'EQNUM', logic: 'AND' }], page: 0, size: 2 });
+    if (r.status >= 300) throw new Error(`sessões: HTTP ${r.status}`);
+    const s = ((r.json && r.json.results) || [])[0];
+    if (!s) continue;
+    const ag = s.agent || s.lastAgent || {};
+    out.push({ id: s.id, protocolo: s.protocol || s.customProtocol || null, status: s.status || null,
+      atendente: ag.name || ag.login || ag.username || null, atendidoEm: s.attendedAt || null, encerradoEm: s.closedAt || null,
+      grupo: (s.groupConf && (s.groupConf.name || s.groupConf.groupName)) || null });
+  }
+  return out;
+}
+
+/** O template como a Neppo devolve (para ver se tem cabeçalho de mídia). Só leitura. */
+async function templateBruto(id) {
+  const t = (await templates(true)).find((x) => Number(x.id) === Number(id));
+  if (!t) throw new Error(`template ${id} não existe`);
+  return t;
+}
+
 /** Histórico de DISPAROS da Neppo cujo texto contém `texto` (ex.: "Peguei seu contato" = os templates de
  *  prospecção). Só leitura. Serve para não mandar de novo para quem já recebeu quando o volume da Lara
  *  antiga se perdeu. ⚠️ Filtrar por template não funciona na Neppo — por isso o filtro é pelo texto. */
@@ -200,6 +227,9 @@ const srv = http.createServer(async (req, res) => {
     if (req.method === 'POST' && u.pathname === '/enviar') return enviarJson(200, await enviar(await corpoJson(req)));
     if (req.method === 'POST' && u.pathname === '/status') return enviarJson(200, { itens: await status((await corpoJson(req)).ids) });
     if (req.method === 'POST' && u.pathname === '/mensagens') return enviarJson(200, { itens: await mensagens((await corpoJson(req)).sessionId) });
+    if (req.method === 'POST' && u.pathname === '/sessoes') return enviarJson(200, { itens: await sessoes((await corpoJson(req)).ids) });
+    let mt;
+    if (req.method === 'GET' && (mt = u.pathname.match(/^\/templates\/(\d+)$/))) return enviarJson(200, await templateBruto(mt[1]));
     if (req.method === 'GET' && u.pathname === '/legado') return enviarJson(200, legado());
     if (req.method === 'GET' && u.pathname === '/historico') return enviarJson(200, await historico(u.searchParams.get('texto'), u.searchParams.get('paginas')));
     return enviarJson(404, { erro: 'rota inexistente' });
