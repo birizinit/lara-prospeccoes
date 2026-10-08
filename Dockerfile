@@ -1,10 +1,11 @@
-# Lara · Prospecções — Node puro (sem dependências)
+# Ponte Neppo (ex-Lara · Prospecções) — Node puro, sem dependências.
+# Desde 07/10/2026 a Lara do Google Maps mora no portal Lara (Railway). Aqui só roda a ponte
+# que fala com a Neppo, porque a Neppo só responde a IP do BRASIL (Fly, região gru).
 FROM node:20-slim
 WORKDIR /app
-COPY . /app
-# estado e fila vão para o Volume (o FS do container é efêmero — ver server.js)
+COPY ponte.js package.json /app/
+# o volume /data guarda o histórico da Lara antiga (lido por GET /legado)
 ENV DATA_DIR=/data
 ENV NEPPO_STRICT_TLS=0
-# no Fly a porta vem do fly.toml (PORT=8080 / internal_port=8080); o server usa process.env.PORT
 EXPOSE 8080
-CMD ["node", "server.js"]
+CMD ["node", "ponte.js"]

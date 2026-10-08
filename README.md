@@ -1,45 +1,27 @@
-# Lara · Prospecções
+# Ponte Neppo (ex-Lara · Prospecções)
 
-Prospecção ativa: **Apify (Google Maps)** → fila → **WhatsApp (Neppo)** em **drip** controlado.
-Servidor Node local (sem dependências), pronto para migrar ao Railway.
+**Desde 07/10/2026 a Lara do Google Maps mora no portal Lara** (`../Lara LinkedIn`, Railway):
+captura no Google Maps, fila, ritmo, freios, CRM e indicadores ficam lá, nas telas
+"WhatsApp · Google Maps".
 
-## Como rodar
-```
-cd "Lara - Prospecções"
-node server.js
-# abre http://localhost:3100
-```
-Segredos ficam no **`.env`** (não commitar). Parâmetros no **`config.json`**.
+Este app no Fly (região **gru**, São Paulo) virou só a **ponte com a Neppo**, porque a Neppo
+**só responde a IP do Brasil** e o Railway não tem região no Brasil.
 
-## Fluxo
-1. **Clique no mapa** para marcar o centro, ajuste o **raio** e digite o **nicho**.
-2. **Prospectar região** → roda o Google Maps Scraper do Apify (`customGeolocation` = círculo do raio) → leads entram na **fila** (dedup por telefone/lugar).
-3. O **agendador** dispara sozinho, em **drip**: até **50/dia útil**, **1000/mês**, só **seg–sex 08h–18h (SP)**, espaçado (~1 a cada N min com jitter).
-4. **Mapa de calor** acende no ponto de cada lead enviado; pins mostram fila/pulados; log ao vivo.
+## Rotas (header `x-cockpit-key` = `COCKPIT_KEY`, menos `/health`)
+| Método | Rota | O quê |
+|---|---|---|
+| GET | `/health` | Está de pé? Tem credencial da Neppo e chave? |
+| GET | `/templates` | Templates HSM da Neppo (paginado — a API corta em 50) |
+| POST | `/enviar` | `{telefone, templateId, imagem?, grupoNome?, grupoConfId?}` → `{ok, id}` |
+| POST | `/status` | `{ids:[...]}` → estado de cada envio (chegou/leu/erro, `sessionId` = respondeu) |
+| POST | `/mensagens` | `{sessionId}` → o que o prospect escreveu |
+| GET | `/legado` | A fila e o histórico da Lara antiga (volume `/data`), só leitura |
 
-## Segurança / boas práticas
-- **Modo teste (dry-run) ligado por padrão** — nada é enviado de verdade até você desligar.
-- **Enviar teste…** manda 1 WhatsApp real para um número seu (validação).
-- Telefones fixos são **pulados** (WhatsApp só em celular) — configurável (`onlyMobileWhatsapp`).
-- **Pausar** e **Limpar fila** a qualquer momento. Contadores persistem em `state.json`.
-- Template usado: **id 97 `07_04_prospect`** (aprovado). Grupo: **ENTRADAS (35)**.
+## Segredos (no Fly)
+`NEPPO_USERNAME` · `NEPPO_PASSWORD` · `NEPPO_CUSTOMER_KEY` · `NEPPO_CUSTOMER_SECRET` · `COCKPIT_KEY`.
 
-## config.json (principais)
-| Campo | O quê |
-|---|---|
-| `apify.actorId` | `nwua9Gu5YrADL7ZDj` (Google Maps Scraper) · `maxResultsPerRun` |
-| `neppo.templateId` / `groupConfId` / `userId` | template, grupo e usuário do disparo |
-| `campaign.monthlyCap` / `dailyCap` | 1000 / 50 |
-| `campaign.businessHourStart/End` · `timezone` | 8 / 18 · America/Sao_Paulo |
-| `campaign.dryRun` / `paused` | travas de segurança |
+## Deploy
+Push na `main` → GitHub Actions → `flyctl deploy --local-only` (o sandbox do Claude não alcança
+os builders do Fly). Teste: `node _teste_ponte.js` (Neppo falsa, 18 checagens).
 
-## Migrar para Railway (depois)
-- `PORT` já vem do ambiente; sem caminhos fixos.
-- Colocar os segredos como **variáveis de ambiente** (não subir `.env`).
-- Always-on: o drip roda 24/7 respeitando horário comercial (não depende da sua máquina ligada).
-- Proteger o acesso (auth simples/basic) antes de expor publicamente.
-
-## Endpoints
-- `POST /api/prospect {niche,lat,lng,radiusKm,maxResults}` — roda Apify, enfileira leads.
-- `GET /api/state` — contadores, leads (p/ mapa) e log.
-- `POST /api/control {action}` — `pause|resume|dryRun|resetCounters|clearQueue|testSend`.
+O app antigo (painel, drip, Apify) está em `legado/`, só para consulta — não roda.
