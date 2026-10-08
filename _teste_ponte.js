@@ -36,7 +36,8 @@ const fake = http.createServer((req, res) => {
     }
     if (req.url === '/chatapi/1.0/api/v2/user-session') {
       const id = Number(c.conditions[0].value);
-      return j(200, { results: id === 555 ? [{ id: 555, protocol: 'WA00000031668', status: 'OPEN', agent: { name: 'Priscilla Caetano' }, attendedAt: '2026-10-07T10:10:00', closedAt: null }] : [] });
+      if (id === 557) return j(200, { results: [{ id: 557, protocol: 'WA00000032176', status: 'CLOSED', agent: null, lastAgent: 'priscilla.caetano', closedAt: '2026-09-02T10:00:00', groupConf: { name: 'Lar Plasticos WhatsApp' } }] });
+      return j(200, { results: id === 555 ? [{ id: 555, protocol: 'WA00000031668', status: 'OPEN', agent: { id: 9, displayName: 'Priscilla Caetano', name: 'Priscilla', userName: 'priscilla.caetano' }, lastAgent: 'priscilla.caetano', attendedAt: '2026-10-07T10:10:00', closedAt: null }] : [] });
     }
     if (req.url === '/chatapi/1.0/api/v2/messages') {
       return j(200, { results: [{ sendBy: 'system', message: 'template', createdAt: 'a' }, { sendBy: 'user', message: 'pode me tirar da lista', contentType: 'TEXT', createdAt: 'b' }, { sendBy: 'user', message: 'https://x/a.jpg', contentType: 'IMAGE', createdAt: 'c' },
@@ -97,9 +98,11 @@ const fake = http.createServer((req, res) => {
     ok((await req('POST', '/mensagens', { sessionId: '1 OR 1' })).s === 502, 'sessionId inválido é recusado');
     const lg = await req('GET', '/legado');
     ok(lg.j.leads.length === 1 && lg.j.leads[0].msgId === 777 && lg.j.estado.monthSent === 120, 'legado: devolve a fila e o estado da Lara antiga (só leitura)', lg.j);
-    const se = await req('POST', '/sessoes', { ids: [555, 556, 'x'] });
-    ok(se.j.itens.length === 1 && se.j.itens[0].protocolo === 'WA00000031668' && se.j.itens[0].atendente === 'Priscilla Caetano' && se.j.itens[0].status === 'OPEN',
+    const se = await req('POST', '/sessoes', { ids: [555, 556, 'x', 557] });
+    ok(se.j.itens.length === 2 && se.j.itens[0].protocolo === 'WA00000031668' && se.j.itens[0].atendente === 'Priscilla Caetano' && se.j.itens[0].status === 'OPEN',
       'sessões: protocolo, situação e quem assumiu (sessão inexistente e id inválido ignorados)', se.j);
+    ok(se.j.itens[1].atendente === 'priscilla.caetano' && se.j.itens[1].encerradoEm && se.j.itens[1].grupo === 'Lar Plasticos WhatsApp',
+      'atendimento encerrado sem agente: usa o último que atendeu (lastAgent)', se.j.itens[1]);
     const tb = await req('GET', '/templates/110');
     ok(tb.s === 200 && tb.j.elementName === 'fixo_lara' && tb.j.nameSpace === 'ns-lar', 'template cru (para ver o cabeçalho)', tb.j);
     ok((await req('GET', '/templates/4')).s === 502, 'template cru inexistente: erro');

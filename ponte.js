@@ -170,10 +170,12 @@ async function sessoes(ids) {
     if (r.status >= 300) throw new Error(`sessões: HTTP ${r.status}`);
     const s = ((r.json && r.json.results) || [])[0];
     if (!s) continue;
-    const ag = s.agent || s.lastAgent || {};
+    // agent = objeto User (displayName/name/userName); lastAgent = texto (o login de quem atendeu por último)
+    const ag = s.agent && typeof s.agent === 'object' ? (s.agent.displayName || s.agent.name || s.agent.userName) : null;
+    const ult = typeof s.lastAgent === 'string' && s.lastAgent.trim() ? s.lastAgent.trim() : null;
     out.push({ id: s.id, protocolo: s.protocol || s.customProtocol || null, status: s.status || null,
-      atendente: ag.name || ag.login || ag.username || null, atendidoEm: s.attendedAt || null, encerradoEm: s.closedAt || null,
-      grupo: (s.groupConf && (s.groupConf.name || s.groupConf.groupName)) || null });
+      atendente: ag || ult || null, atendidoEm: s.attendedAt || null, encerradoEm: s.closedAt || null,
+      grupo: (s.groupConf && s.groupConf.name) || null });
   }
   return out;
 }
