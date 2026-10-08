@@ -10,6 +10,7 @@
  *   POST /status              → { ids: [..] } → [{ id, status, descricao, sessionId, enviadoEm, atualizadoEm }]
  *   POST /mensagens           → { sessionId } → [{ em, de, texto }]  (o que o PROSPECT escreveu)
  *   GET  /legado              → a fila/histórico da Lara antiga (volume /data), só leitura
+ *   GET  /historico?texto=    → disparos da Neppo cujo texto contém `texto` (quem já recebeu), só leitura
  *
  * ⚠️ A Neppo emite UM token por credencial: outro consumidor que peça token invalida o nosso.
  * No 401 descarta o cache e tenta UMA vez (lição de 01/09 — a Lara ficava 1 h muda).
@@ -146,6 +147,30 @@ async function mensagens(sessionId) {
     .map((m) => ({ em: m.createdAt || null, tipo: m.contentType || 'TEXT', texto: m.contentType && m.contentType !== 'TEXT' ? `[${m.contentType}]` : String(m.message || '') }));
 }
 
+/** Histórico de DISPAROS da Neppo cujo texto contém `texto` (ex.: "Peguei seu contato" = os templates de
+ *  prospecção). Só leitura. Serve para não mandar de novo para quem já recebeu quando o volume da Lara
+ *  antiga se perdeu. ⚠️ Filtrar por template não funciona na Neppo — por isso o filtro é pelo texto. */
+async function historico(texto, maxPaginas) {
+  const t = String(texto || '').trim();
+  if (t.length < 6) throw new Error('texto curto demais para filtrar');
+  const ler = async (valor) => {
+    const out = [];
+    for (let pg = 0; pg < Math.min(Number(maxPaginas) || 40, 80); pg++) {
+      const r = await neppo('/chatapi/1.0/api/direct-message', { conditions: [{ key: 'message', value: valor, operator: 'LIKE', logic: 'AND' }], page: pg, size: 50 });
+      if (r.status >= 300) throw new Error(`histórico: HTTP ${r.status}`);
+      const parte = (r.json && r.json.results) || [];
+      out.push(...parte);
+      if (parte.length < 50) break;
+    }
+    return out;
+  };
+  let itens = await ler(`%${t}%`);
+  let modo = 'curinga';
+  if (!itens.length) { itens = await ler(t); modo = 'literal'; }
+  return { modo, itens: itens.map((m) => ({ id: m.id, telefone: String(m.phoneNumber || '').replace(/\D/g, ''), status: m.status || null,
+    descricao: m.description || null, sessionId: m.sessionId || null, enviadoEm: m.sentAt || m.createdAt || null, grupo: m.groupName || null })) };
+}
+
 function legado() {
   const ler = (f, pad) => { try { return JSON.parse(fs.readFileSync(path.join(DATA_DIR, f), 'utf8')); } catch (_) { return pad; } };
   return { leads: ler('leads.json', []), estado: ler('state.json', {}) };
@@ -176,6 +201,7 @@ const srv = http.createServer(async (req, res) => {
     if (req.method === 'POST' && u.pathname === '/status') return enviarJson(200, { itens: await status((await corpoJson(req)).ids) });
     if (req.method === 'POST' && u.pathname === '/mensagens') return enviarJson(200, { itens: await mensagens((await corpoJson(req)).sessionId) });
     if (req.method === 'GET' && u.pathname === '/legado') return enviarJson(200, legado());
+    if (req.method === 'GET' && u.pathname === '/historico') return enviarJson(200, await historico(u.searchParams.get('texto'), u.searchParams.get('paginas')));
     return enviarJson(404, { erro: 'rota inexistente' });
   } catch (e) {
     return enviarJson(502, { erro: e.message });

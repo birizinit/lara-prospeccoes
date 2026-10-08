@@ -8,7 +8,7 @@ const path = require('path');
 let oks = 0, falhas = 0;
 const ok = (c, m, x) => { if (c) { oks++; console.log('  ok  ' + m); } else { falhas++; console.log('  FALHA  ' + m + (x !== undefined ? ' → ' + JSON.stringify(x).slice(0, 300) : '')); } };
 
-const st = { tokens: 0, envios: [], derrubar: false, paginas: [] };
+const st = { tokens: 0, envios: [], derrubar: false, paginas: [], likes: [] };
 const TEMPLATES = Array.from({ length: 60 }, (_, i) => ({ id: i + 60, elementName: 'tpl_' + (i + 60), nameSpace: 'ns', template: 'Olá ' + (i + 60), parameterCount: i + 60 === 99 ? 2 : 0 }));
 TEMPLATES[50] = { id: 110, elementName: 'fixo_lara', nameSpace: 'ns-lar', template: 'Oi! Vi sua empresa no Google…', parameterCount: 0 };
 const fake = http.createServer((req, res) => {
@@ -22,6 +22,14 @@ const fake = http.createServer((req, res) => {
     const c = b ? JSON.parse(b) : {};
     if (req.url === '/chatapi/1.0/api/hsm-template') { st.paginas.push(c.page); return j(200, { results: TEMPLATES.slice(c.page * 50, c.page * 50 + 50) }); }
     if (req.url === '/chatapi/1.0/api/direct-message/save') { st.envios.push(c); return j(200, { id: 900 + st.envios.length }); }
+    if (req.url === '/chatapi/1.0/api/direct-message' && c.conditions[0].key === 'message') {
+      // esta Neppo falsa NÃO entende o curinga %: só o texto literal casa (a ponte tem de cair no 2º modo)
+      st.likes.push(c.conditions[0].value);
+      if (c.conditions[0].value.includes('%')) return j(200, { results: [] });
+      const todos = Array.from({ length: 63 }, (_, i) => ({ id: 3000 + i, phoneNumber: '+55 11 9' + String(80000000 + i), status: i % 3 ? 'LIDA' : 'ERRO',
+        description: i % 3 ? null : '131026', sessionId: i % 5 === 0 ? 400 + i : null, sentAt: '2026-09-0' + (1 + (i % 9)) + 'T12:00:00', groupName: 'Lar Plasticos WhatsApp' }));
+      return j(200, { results: todos.slice(c.page * 50, c.page * 50 + 50) });
+    }
     if (req.url === '/chatapi/1.0/api/direct-message') {
       const id = Number(c.conditions[0].value);
       return j(200, { results: [{ id, status: id === 901 ? 'LIDA' : 'ERRO', description: id === 901 ? null : '131049 - not delivered', sessionId: id === 901 ? 555 : null, sentAt: '2026-10-07T10:00:00', updatedAt: '2026-10-07T10:05:00' }] });
@@ -82,6 +90,12 @@ const fake = http.createServer((req, res) => {
     ok((await req('POST', '/mensagens', { sessionId: '1 OR 1' })).s === 502, 'sessionId inválido é recusado');
     const lg = await req('GET', '/legado');
     ok(lg.j.leads.length === 1 && lg.j.leads[0].msgId === 777 && lg.j.estado.monthSent === 120, 'legado: devolve a fila e o estado da Lara antiga (só leitura)', lg.j);
+    const hs = await req('GET', '/historico?texto=' + encodeURIComponent('Peguei seu contato'));
+    ok(hs.j.modo === 'literal' && hs.j.itens.length === 63 && st.likes[0] === '%Peguei seu contato%' && st.likes.includes('Peguei seu contato'),
+      'histórico: tenta o curinga, cai no literal e pagina (63 disparos em 2 páginas)', { modo: hs.j.modo, n: hs.j.itens.length, likes: st.likes });
+    ok(hs.j.itens[0].telefone === '5511980000000' && hs.j.itens[0].sessionId === 400 && hs.j.itens[0].status === 'ERRO' && hs.j.itens[0].descricao === '131026',
+      'histórico: telefone só dígitos, sessão (= respondeu), estado e motivo', hs.j.itens[0]);
+    ok((await req('GET', '/historico?texto=oi')).s === 502, 'histórico: texto curto demais é recusado (não varre tudo)');
     ok((await req('GET', '/nada')).s === 404, 'rota inexistente: 404');
   } catch (e2) { falhas++; console.log('  ERRO  ' + e2.stack); }
   finally {
