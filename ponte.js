@@ -146,7 +146,18 @@ async function mensagens(sessionId) {
     sort: true, sortColumn: 'createdAt', direction: 'ASC', page: 0, size: 50 });
   if (r.status >= 300) throw new Error(`mensagens: HTTP ${r.status}`);
   return ((r.json && r.json.results) || []).filter((m) => m.sendBy === 'user')
-    .map((m) => ({ em: m.createdAt || null, tipo: m.contentType || 'TEXT', texto: m.contentType && m.contentType !== 'TEXT' ? `[${m.contentType}]` : String(m.message || '') }));
+    .map((m) => ({ em: m.createdAt || null, tipo: m.contentType || 'TEXT', texto: textoMsg(m) }));
+}
+
+/** O que o prospect escreveu. ⚠️ Clique em botão de resposta rápida ("Não tenho interesse") pode chegar com
+ *  tipo BUTTON/INTERACTIVE — o TEXTO do botão tem de passar, senão quem recusou vira negócio no Ploomes. */
+const TIPO_BOTAO = /BUTTON|INTERACTIVE|QUICK|REPLY|TEMPLATE/i;
+function textoMsg(m) {
+  let t = m.message;
+  if (t && typeof t === 'object') t = t.text || t.title || t.payload || t.body || JSON.stringify(t);
+  t = String(t || '');
+  if (!m.contentType || m.contentType === 'TEXT' || TIPO_BOTAO.test(m.contentType)) return t;
+  return `[${m.contentType}]`;
 }
 
 /** Sessões (o atendimento que nasce quando o prospect RESPONDE): protocolo e quem assumiu. Só leitura.

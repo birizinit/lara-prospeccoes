@@ -39,7 +39,8 @@ const fake = http.createServer((req, res) => {
       return j(200, { results: id === 555 ? [{ id: 555, protocol: 'WA00000031668', status: 'OPEN', agent: { name: 'Priscilla Caetano' }, attendedAt: '2026-10-07T10:10:00', closedAt: null }] : [] });
     }
     if (req.url === '/chatapi/1.0/api/v2/messages') {
-      return j(200, { results: [{ sendBy: 'system', message: 'template', createdAt: 'a' }, { sendBy: 'user', message: 'pode me tirar da lista', contentType: 'TEXT', createdAt: 'b' }, { sendBy: 'user', message: 'https://x/a.jpg', contentType: 'IMAGE', createdAt: 'c' }] });
+      return j(200, { results: [{ sendBy: 'system', message: 'template', createdAt: 'a' }, { sendBy: 'user', message: 'pode me tirar da lista', contentType: 'TEXT', createdAt: 'b' }, { sendBy: 'user', message: 'https://x/a.jpg', contentType: 'IMAGE', createdAt: 'c' },
+        { sendBy: 'user', message: 'Não tenho interesse', contentType: 'BUTTON', createdAt: 'd' }, { sendBy: 'user', message: { text: 'Quero conhecer' }, contentType: 'INTERACTIVE', createdAt: 'e' }] });
     }
     return j(404, {});
   });
@@ -90,7 +91,9 @@ const fake = http.createServer((req, res) => {
     ok(s.j.itens.length === 2 && s.j.itens[0].status === 'LIDA' && s.j.itens[0].sessionId === 555 && /131049/.test(s.j.itens[1].descricao),
       'status: estado, sessão (= respondeu) e motivo do erro; id não numérico é ignorado', s.j);
     const msg = await req('POST', '/mensagens', { sessionId: 555 });
-    ok(msg.j.itens.length === 2 && msg.j.itens[0].texto === 'pode me tirar da lista' && msg.j.itens[1].texto === '[IMAGE]', 'mensagens: só o que o PROSPECT escreveu', msg.j);
+    ok(msg.j.itens.length === 4 && msg.j.itens[0].texto === 'pode me tirar da lista' && msg.j.itens[1].texto === '[IMAGE]', 'mensagens: só o que o PROSPECT escreveu', msg.j);
+    ok(msg.j.itens[2].texto === 'Não tenho interesse' && msg.j.itens[3].texto === 'Quero conhecer',
+      'clique em botão de resposta rápida chega com o TEXTO do botão (senão quem recusou viraria negócio)', msg.j.itens.slice(2));
     ok((await req('POST', '/mensagens', { sessionId: '1 OR 1' })).s === 502, 'sessionId inválido é recusado');
     const lg = await req('GET', '/legado');
     ok(lg.j.leads.length === 1 && lg.j.leads[0].msgId === 777 && lg.j.estado.monthSent === 120, 'legado: devolve a fila e o estado da Lara antiga (só leitura)', lg.j);
