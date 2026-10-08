@@ -8,7 +8,7 @@ const path = require('path');
 let oks = 0, falhas = 0;
 const ok = (c, m, x) => { if (c) { oks++; console.log('  ok  ' + m); } else { falhas++; console.log('  FALHA  ' + m + (x !== undefined ? ' → ' + JSON.stringify(x).slice(0, 300) : '')); } };
 
-const st = { tokens: 0, envios: [], derrubar: false, paginas: [], likes: [] };
+const st = { tokens: 0, envios: [], derrubar: false, paginas: [], likes: [], janelas: [], contagens: [], ignorarFiltro: false };
 const TEMPLATES = Array.from({ length: 60 }, (_, i) => ({ id: i + 60, elementName: 'tpl_' + (i + 60), nameSpace: 'ns', template: 'Olá ' + (i + 60), parameterCount: i + 60 === 99 ? 2 : 0 }));
 TEMPLATES[50] = { id: 110, elementName: 'fixo_lara', nameSpace: 'ns-lar', template: 'Oi! Vi sua empresa no Google…', parameterCount: 0 };
 const fake = http.createServer((req, res) => {
@@ -33,6 +33,22 @@ const fake = http.createServer((req, res) => {
     if (req.url === '/chatapi/1.0/api/direct-message') {
       const id = Number(c.conditions[0].value);
       return j(200, { results: [{ id, status: id === 901 ? 'LIDA' : 'ERRO', description: id === 901 ? null : '131049 - not delivered', sessionId: id === 901 ? 555 : null, sentAt: '2026-10-07T10:00:00', updatedAt: '2026-10-07T10:05:00' }] });
+    }
+    if (req.url === '/chatapi/1.0/api/v2/user-session/count') { st.contagens.push(c.conditions); return j(200, 120); }
+    if (req.url === '/chatapi/1.0/api/v2/user-session' && c.conditions[0].key === 'createdAt') {
+      st.janelas.push({ conds: c.conditions, page: c.page, size: c.size });
+      const desde = Number(c.conditions[0].value), ate = Number(c.conditions[1].value);
+      // 120 sessões espalhadas na janela, em horário de Brasília SEM fuso (como a Neppo devolve)
+      const brt = (ms) => new Date(ms - 3 * 3600000).toISOString().slice(0, 19);
+      const todas = Array.from({ length: 120 }, (_, i) => {
+        const t = st.ignorarFiltro ? Date.UTC(2023, 0, 1) + i * 3600000 : desde + Math.floor((ate - desde) * (i + 0.5) / 120);
+        return { id: 7000 + i, protocol: 'WA' + String(7000 + i).padStart(11, '0'), status: i % 4 ? 'CLOSED' : 'OPEN', createdAt: brt(t),
+          attendedAt: i % 3 ? brt(t + 60000) : null, closedAt: i % 4 ? brt(t + 3600000) : null,
+          agent: i % 3 ? { displayName: 'Vendedor ' + (i % 5) } : null, lastAgent: i % 3 ? 'vend' + (i % 5) : 'Lar Plásticos - V16 0 DOS@botserver',
+          groupConf: { name: i % 2 ? 'Equipe Revenda' : 'Equipe Final' }, channel: 'WHATSAPP', directMessageId: i === 5 ? 99 : null, onlyBot: i % 3 === 0,
+          user: i === 7 ? { userName: 'whatsapp_5531999990007', name: 'Cliente Sete' } : { phone: '+55 (11) 9' + String(80000000 + i), name: 'Cliente ' + i } };
+      });
+      return j(200, { results: todas.slice(c.page * 50, c.page * 50 + 50) });
     }
     if (req.url === '/chatapi/1.0/api/v2/user-session') {
       const id = Number(c.conditions[0].value);
@@ -112,6 +128,34 @@ const fake = http.createServer((req, res) => {
     ok(hs.j.itens[0].telefone === '5511980000000' && hs.j.itens[0].sessionId === 400 && hs.j.itens[0].status === 'ERRO' && hs.j.itens[0].descricao === '131026',
       'histórico: telefone só dígitos, sessão (= respondeu), estado e motivo', hs.j.itens[0]);
     ok((await req('GET', '/historico?texto=oi')).s === 502, 'histórico: texto curto demais é recusado (não varre tudo)');
+    // ---- sessões por janela (Aeroporto de Leads) ----
+    const D0 = Date.UTC(2026, 8, 1, 3), D1 = Date.UTC(2026, 9, 1, 3);   // set/2026 em horário de Brasília
+    const jc = await req('POST', '/sessoes-janela', { desde: D0, ate: D1, contar: true });
+    ok(jc.s === 200 && jc.j.total === 120, 'janela: contar devolve o total da Neppo', jc.j);
+    ok(st.contagens[0][0].operator === 'AFTER' && st.contagens[0][0].value === String(D0) && st.contagens[0][1].operator === 'BEFORE' && st.contagens[0][1].value === String(D1),
+      'janela: filtra createdAt com AFTER/BEFORE em EPOCH MS (a forma que a Neppo respeita)', st.contagens[0]);
+    const j0 = await req('POST', '/sessoes-janela', { desde: D0, ate: D1, pagina: 0, debug: true });
+    const j2 = await req('POST', '/sessoes-janela', { desde: D0, ate: D1, pagina: 2 });
+    ok(j0.j.itens.length === 50 && !j0.j.fim && j2.j.itens.length === 20 && j2.j.fim && st.janelas[1].page === 2 && st.janelas[1].size === 50,
+      'janela: uma página de 50 por chamada; a última diz fim', { p0: j0.j.itens.length, p2: j2.j.itens.length, fim: j2.j.fim });
+    const s0 = j0.j.itens[0], s1 = j0.j.itens[1];
+    ok(s0.protocolo === 'WA00000007000' && s0.telefone === '5511980000000' && s0.nome === 'Cliente 0' && s0.grupo === 'Equipe Final' && s0.canal === 'WHATSAPP',
+      'janela: protocolo, telefone só dígitos, nome, grupo e canal', s0);
+    ok(s0.atendente === 'Lar Plásticos - V16 0 DOS@botserver' && s0.atendidoEm === null && s0.soBot === true && s1.atendente === 'Vendedor 1' && s1.atendidoEm,
+      'janela: ninguém assumiu (só bot) × atendida por vendedor', [s0, s1]);
+    ok(j0.j.itens[7].telefone === '5531999990007' && j0.j.itens[5].envioAtivo === 99, 'janela: telefone tirado do whatsapp_<número> e envio ativo marcado', [j0.j.itens[7], j0.j.itens[5]]);
+    ok(j0.j.filtroIgnorado === false, 'janela: datas dentro da janela → filtro respeitado');
+    ok(j0.j.campos && j0.j.campos.usuario.includes('phone') && !j2.j.campos, 'janela: debug devolve os nomes dos campos (só quando pedido)', j0.j.campos);
+    st.ignorarFiltro = true;
+    const ji = await req('POST', '/sessoes-janela', { desde: D0, ate: D1, pagina: 0 });
+    st.ignorarFiltro = false;
+    ok(ji.s === 200 && ji.j.filtroIgnorado === true, 'janela: se a Neppo IGNORAR o filtro (devolve 2023), a rota acusa em vez de passar a base inteira', ji.j.filtroIgnorado);
+    ok((await req('POST', '/sessoes-janela', { desde: D1, ate: D0 })).s === 502, 'janela: desde depois de ate é recusado');
+    ok((await req('POST', '/sessoes-janela', { desde: 'ontem', ate: D1 })).s === 502, 'janela: data que não é epoch é recusada');
+    ok((await req('POST', '/sessoes-janela', { desde: D0 - 500 * 86400000, ate: D1 })).s === 502, 'janela: mais de 400 dias é recusada');
+    ok((await req('POST', '/sessoes-janela', { desde: D0, ate: D1, pagina: -1 })).s === 502, 'janela: página negativa é recusada');
+    ok((await req('POST', '/sessoes-janela', { desde: D0, ate: D1 }, false)).s === 401, 'janela: sem a chave, 401');
+
     ok((await req('GET', '/nada')).s === 404, 'rota inexistente: 404');
   } catch (e2) { falhas++; console.log('  ERRO  ' + e2.stack); }
   finally {

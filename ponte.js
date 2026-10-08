@@ -13,6 +13,8 @@
  *   GET  /templates/:id       → o template cru da Neppo (ver cabeçalho de mídia)
  *   GET  /legado              → a fila/histórico da Lara antiga (volume /data), só leitura
  *   GET  /historico?texto=    → disparos da Neppo cujo texto contém `texto` (quem já recebeu), só leitura
+ *   POST /sessoes-janela      → { desde, ate (epoch ms), pagina, contar?, debug? } → protocolos criados na janela, 50 por
+ *                               página, com telefone, atendente e grupo (Aeroporto de Leads do cockpit), só leitura
  *
  * ⚠️ A Neppo emite UM token por credencial: outro consumidor que peça token invalida o nosso.
  * No 401 descarta o cache e tenta UMA vez (lição de 01/09 — a Lara ficava 1 h muda).
@@ -211,6 +213,59 @@ async function historico(texto, maxPaginas) {
     descricao: m.description || null, sessionId: m.sessionId || null, enviadoEm: m.sentAt || m.createdAt || null, grupo: m.groupName || null })) };
 }
 
+/** Sessões (protocolos) CRIADAS numa janela — para o Aeroporto de Leads cruzar telefone × Ploomes. Só leitura.
+ *  Uma página por chamada (a Neppo corta em 50); quem chama pagina. `contar` devolve só o total.
+ *  ⚠️ AFTER/BEFORE só filtram com EPOCH EM MS — e, se a Neppo ignorar o filtro, ela devolve a base inteira
+ *  sem erro. Por isso a rota confere as datas que voltaram e marca `filtroIgnorado` (quem chama aborta). */
+const SP_MS = 3 * 3600000;
+const isoBr = (s) => { const t = Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(String(s)) ? s : String(s) + '-03:00'); return Number.isNaN(t) ? null : t; };
+function foneDe(u) {
+  if (!u || typeof u !== 'object') return null;
+  for (const k of ['phone', 'mobilePhone', 'cellPhone', 'whatsapp', 'phoneNumber']) {
+    const d = String(u[k] || '').replace(/\D/g, '');
+    if (d.length >= 10) return d;
+  }
+  for (const k of ['userName', 'username', 'login', 'externalId', 'identifier']) {
+    const m = String(u[k] || '').match(/(\d{10,13})/);
+    if (m) return m[1];
+  }
+  return null;
+}
+async function sessoesJanela(c) {
+  const desde = Number(c.desde), ate = Number(c.ate), pagina = Number(c.pagina || 0);
+  if (!Number.isInteger(desde) || !Number.isInteger(ate) || desde <= 0 || ate <= desde) throw new Error('janela inválida (desde/ate em epoch ms)');
+  if (ate - desde > 400 * 86400000) throw new Error('janela longa demais (máx 400 dias)');
+  if (!Number.isInteger(pagina) || pagina < 0 || pagina > 2000) throw new Error('página inválida');
+  const conditions = [{ key: 'createdAt', value: String(desde), operator: 'AFTER', logic: 'AND' },
+    { key: 'createdAt', value: String(ate), operator: 'BEFORE', logic: 'AND' }];
+  if (c.contar) {
+    const r = await neppo('/chatapi/1.0/api/v2/user-session/count', { conditions });
+    if (r.status >= 300) throw new Error(`contagem: HTTP ${r.status}`);
+    const n = typeof r.json === 'number' ? r.json : Number(String(r.texto || '').trim());
+    if (!Number.isFinite(n)) throw new Error('contagem: resposta não numérica');
+    return { total: n };
+  }
+  const r = await neppo('/chatapi/1.0/api/v2/user-session', { conditions, page: pagina, size: 50 });
+  if (r.status >= 300) throw new Error(`sessões da janela: HTTP ${r.status}`);
+  const lista = (r.json && r.json.results) || [];
+  // folga de 2 dias nas pontas: a Neppo guarda horário de Brasília sem fuso e o epoch é UTC
+  const fora = lista.filter((s) => { const t = isoBr(s.createdAt); return t != null && (t < desde - 2 * 86400000 - SP_MS || t > ate + 2 * 86400000); }).length;
+  const itens = lista.map((s) => {
+    const ag = s.agent && typeof s.agent === 'object' ? (s.agent.displayName || s.agent.name || s.agent.userName) : null;
+    const ult = typeof s.lastAgent === 'string' && s.lastAgent.trim() ? s.lastAgent.trim() : null;
+    const u = s.user && typeof s.user === 'object' ? s.user : {};
+    return { id: s.id, protocolo: s.protocol || s.customProtocol || null, status: s.status || null,
+      criadoEm: s.createdAt || null, atendidoEm: s.attendedAt || null, encerradoEm: s.closedAt || null,
+      atendente: ag || ult || null, grupo: (s.groupConf && s.groupConf.name) || null,
+      canal: s.channel || u.channel || s.originUser || null, telefone: foneDe(u),
+      nome: u.name || u.displayName || u.fullName || u.firstName || null,
+      envioAtivo: s.directMessageId || null, soBot: s.onlyBot === true };
+  });
+  const out = { pagina, itens, fim: lista.length < 50, filtroIgnorado: lista.length > 0 && fora > lista.length / 2 };
+  if (c.debug && lista[0]) out.campos = { sessao: Object.keys(lista[0]), usuario: Object.keys(lista[0].user || {}) };
+  return out;
+}
+
 function legado() {
   const ler = (f, pad) => { try { return JSON.parse(fs.readFileSync(path.join(DATA_DIR, f), 'utf8')); } catch (_) { return pad; } };
   return { leads: ler('leads.json', []), estado: ler('state.json', {}) };
@@ -241,6 +296,7 @@ const srv = http.createServer(async (req, res) => {
     if (req.method === 'POST' && u.pathname === '/status') return enviarJson(200, { itens: await status((await corpoJson(req)).ids) });
     if (req.method === 'POST' && u.pathname === '/mensagens') return enviarJson(200, { itens: await mensagens((await corpoJson(req)).sessionId) });
     if (req.method === 'POST' && u.pathname === '/sessoes') return enviarJson(200, { itens: await sessoes((await corpoJson(req)).ids) });
+    if (req.method === 'POST' && u.pathname === '/sessoes-janela') return enviarJson(200, await sessoesJanela(await corpoJson(req)));
     let mt;
     if (req.method === 'GET' && (mt = u.pathname.match(/^\/templates\/(\d+)$/))) return enviarJson(200, await templateBruto(mt[1]));
     if (req.method === 'GET' && u.pathname === '/legado') return enviarJson(200, legado());
