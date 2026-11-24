@@ -164,6 +164,14 @@ const fake = http.createServer((req, res) => {
     ok((await req('POST', '/sessoes-janela', { desde: D0, ate: D1, pagina: -1 })).s === 502, 'janela: página negativa é recusada');
     ok((await req('POST', '/sessoes-janela', { desde: D0, ate: D1 }, false)).s === 401, 'janela: sem a chave, 401');
 
+    // 23/11: rota de TESTE do texto livre — só o telefone liberado, nunca outro
+    const envAntes = st.envios.length;
+    const tx1 = await req('POST', '/teste-texto', { telefone: '5511999998888', texto: 'oi', modo: 'direct' });
+    ok(tx1.j.ok === false && /fora da lista/.test(tx1.j.erro) && st.envios.length === envAntes, 'teste-texto: telefone fora da lista é recusado sem enviar', tx1.j);
+    ok((await req('POST', '/teste-texto', { telefone: '5511940144886', texto: '', modo: 'direct' })).j.ok === false, 'teste-texto: texto vazio é recusado');
+    ok((await req('POST', '/teste-texto', { telefone: '5511940144886', texto: 'oi', modo: 'x' })).j.ok === false, 'teste-texto: modo desconhecido é recusado');
+    ok((await req('POST', '/teste-texto', { telefone: '5511940144886', texto: 'oi', modo: 'direct' }, false)).s === 401, 'teste-texto: sem a chave, 401');
+
     ok((await req('GET', '/nada')).s === 404, 'rota inexistente: 404');
   } catch (e2) { falhas++; console.log('  ERRO  ' + e2.stack); }
   finally {

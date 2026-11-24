@@ -128,6 +128,38 @@ async function enviar(c) {
   return { ok: false, erro: `Neppo HTTP ${r.status} ${String(r.texto || '').slice(0, 200)}` };
 }
 
+/** TESTE (23/11/2026, pedido do Gabriel): a Neppo entrega TEXTO LIVRE pelo número oficial dentro da janela de 24 h?
+ *  Só para os telefones de PONTE_TESTE_FONES (padrão: o do Gabriel). Devolve a resposta crua da Neppo.
+ *  modo 'direct' = direct-message/save sem template · modo 'sessao' = messages/save dentro do protocolo aberto. */
+async function testeTexto(c) {
+  const fone = String(c.telefone || '').replace(/\D/g, '');
+  const liberados = String(process.env.PONTE_TESTE_FONES || '5511940144886').split(',').map((x) => x.replace(/\D/g, '')).filter(Boolean);
+  if (!liberados.includes(fone)) return { ok: false, erro: 'telefone fora da lista de teste' };
+  const texto = String(c.texto || '').trim();
+  if (!texto || texto.length > 500) return { ok: false, erro: 'texto vazio ou maior que 500' };
+  if (c.modo === 'direct') {
+    const r = await neppo('/chatapi/1.0/api/direct-message/save', {
+      phoneNumber: fone, channel: PADRAO.canal, message: texto, groupName: PADRAO.grupoNome,
+      additionalInfo: JSON.stringify({ openSession: false }), status: 'PROCESSANDO', createdBy: PADRAO.criadoPor,
+      userId: PADRAO.userId, senderUserId: null, groupConfId: PADRAO.grupoConfId, generatedSession: 0 });
+    return { ok: r.status >= 200 && r.status < 300, http: r.status, id: (r.json && r.json.id) || null, corpo: String(r.texto || '').slice(0, 600) };
+  }
+  if (c.modo === 'sessao') {
+    if (!/^\d+$/.test(String(c.sessionId || ''))) return { ok: false, erro: 'sessionId inválido' };
+    const rs = await neppo('/chatapi/1.0/api/v2/user-session', { conditions: [{ key: 'id', value: String(c.sessionId), operator: 'EQNUM', logic: 'AND' }], page: 0, size: 2 });
+    const s = ((rs.json && rs.json.results) || [])[0];
+    if (!s) return { ok: false, erro: 'sessão não encontrada' };
+    if (!String(foneDe(s.user) || '').endsWith(fone.slice(-8))) return { ok: false, erro: 'a sessão não é deste telefone' };
+    const u = s.user && typeof s.user === 'object' ? s.user : {};
+    const r = await neppo('/chatapi/1.0/api/v2/messages/save', {
+      session: { id: s.id }, message: texto, contentType: 'TEXT', sendBy: 'bot',
+      toUser: u.userName || ('whatsapp_' + fone) });
+    return { ok: r.status >= 200 && r.status < 300, http: r.status, sessao: { id: s.id, protocolo: s.protocol || null, status: s.status || null },
+      corpo: String(r.texto || '').slice(0, 600) };
+  }
+  return { ok: false, erro: "modo: 'direct' ou 'sessao'" };
+}
+
 async function status(ids) {
   const out = [];
   for (const id of (Array.isArray(ids) ? ids : []).slice(0, 40)) {
@@ -324,6 +356,7 @@ const srv = http.createServer(async (req, res) => {
       return enviarJson(200, { itens: (await templates(u.searchParams.get('forcar') === '1')).map(resumoTpl) });
     }
     if (req.method === 'POST' && u.pathname === '/enviar') return enviarJson(200, await enviar(await corpoJson(req)));
+    if (req.method === 'POST' && u.pathname === '/teste-texto') return enviarJson(200, await testeTexto(await corpoJson(req)));
     if (req.method === 'POST' && u.pathname === '/status') return enviarJson(200, { itens: await status((await corpoJson(req)).ids) });
     if (req.method === 'POST' && u.pathname === '/mensagens') return enviarJson(200, { itens: await mensagens((await corpoJson(req)).sessionId) });
     if (req.method === 'POST' && u.pathname === '/sessoes') return enviarJson(200, { itens: await sessoes((await corpoJson(req)).ids) });
